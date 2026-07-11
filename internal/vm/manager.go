@@ -91,7 +91,11 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 
 	i := m.inst(name)
-	i.opMu.Lock()
+	// ctx-aware like Stop: an autostart goroutine blocked here must unblock
+	// when the daemon shuts down, or wg.Wait() overruns the shutdown budget.
+	if err := acquireOpMu(ctx, i, name); err != nil {
+		return err
+	}
 	defer i.opMu.Unlock()
 
 	i.mu.Lock()
@@ -140,6 +144,9 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 // racing ctx.Done(). This bounds how long Stop() (and therefore StopAll)
 // waits behind a concurrent in-flight Start/Stop, so a shutdown budget
 // actually bounds wall-clock time instead of blocking on a plain Lock.
+// Note: TryLock polling can barge ahead of a plain-Lock waiter for up to
+// ~1ms before Go's mutex starvation mode bounds it — acceptable here since
+// both Start and Stop now acquire through this helper.
 func acquireOpMu(ctx context.Context, i *instance, name string) error {
 	for {
 		if i.opMu.TryLock() {
@@ -147,7 +154,7 @@ func acquireOpMu(ctx context.Context, i *instance, name string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("stop %s: %w while waiting for in-flight operation", name, ctx.Err())
+			return fmt.Errorf("%s: %w while waiting for in-flight operation", name, ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
