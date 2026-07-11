@@ -195,3 +195,27 @@ func TestStartErrorsWhenLaunchFnNil(t *testing.T) {
 		t.Fatal("want error when launchFn is nil")
 	}
 }
+
+// Regression: a machine crashed by a FAILED LAUNCH has state=Crashed with a
+// nil handle. Stop()/StopAll() on it must not panic the daemon (nil method
+// value reached stopWithEscalation's hard path before the guard installed)
+// and must settle the machine back to Stopped.
+func TestStopAfterFailedLaunchDoesNotPanic(t *testing.T) {
+	m, reg := newTestManager(t)
+	saveMachine(t, reg, "m1")
+	withLaunchFn(t, fakeLaunch(nil, errors.New("boom")))
+
+	if err := m.Start(context.Background(), "m1"); err == nil {
+		t.Fatal("want launch error")
+	}
+	if got := m.Info("m1").State; got != StateCrashed {
+		t.Fatalf("state after failed launch: %v", got)
+	}
+	if err := m.Stop(context.Background(), "m1"); err != nil {
+		t.Fatalf("Stop on crashed/nil-handle machine: %v", err)
+	}
+	if got := m.Info("m1").State; got != StateStopped {
+		t.Fatalf("state after Stop: %v", got)
+	}
+	m.StopAll(context.Background()) // must not panic either
+}

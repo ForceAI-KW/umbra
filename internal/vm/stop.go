@@ -31,6 +31,9 @@ type vzHandle interface {
 // Stop() → poll until confirmed stopped within hardTimeout (P8, P9). Never
 // trust a stop call on send — only on observed state.
 func stopWithEscalation(ctx context.Context, h vzHandle, gracefulTimeout, hardTimeout time.Duration) error {
+	if h == nil {
+		return nil // nothing was ever launched — vacuously stopped
+	}
 	_ = guarded("request-stop", func() error {
 		_, err := h.RequestStop()
 		return err
@@ -38,7 +41,9 @@ func stopWithEscalation(ctx context.Context, h vzHandle, gracefulTimeout, hardTi
 	if waitState(ctx, h, vzStopped, gracefulTimeout) {
 		return nil
 	}
-	if err := guarded("hard-stop", h.Stop); err != nil {
+	// closure, not a method value: evaluating h.Stop on a nil concrete handle
+	// would panic before guarded's recover is installed
+	if err := guarded("hard-stop", func() error { return h.Stop() }); err != nil {
 		return fmt.Errorf("hard stop failed: %w", err)
 	}
 	if waitState(ctx, h, vzStopped, hardTimeout) {
