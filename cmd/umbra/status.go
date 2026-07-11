@@ -16,8 +16,7 @@ var statusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := apiClient.Ping(cmd.Context()); err != nil {
 			if statusJSON {
-				json.NewEncoder(os.Stdout).Encode(map[string]any{"daemon": "down", "error": err.Error()})
-				return nil
+				return json.NewEncoder(os.Stdout).Encode(map[string]any{"daemon": "down", "error": err.Error()})
 			}
 			return fmt.Errorf("daemon: DOWN (%w)", err)
 		}

@@ -18,7 +18,8 @@ var rootCmd = &cobra.Command{
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		apiClient = client.New(paths.APISocket())
 	},
-	SilenceUsage: true,
+	SilenceUsage:  true,
+	SilenceErrors: true, // execute() prints the single error line
 }
 
 func execute() int {
