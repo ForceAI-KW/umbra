@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -90,13 +91,25 @@ func run(logger *slog.Logger) error {
 	go func() { errCh <- httpSrv.Serve(l) }()
 	logger.Info("umbrad listening", "socket", sock)
 
+	// daemonCtx bounds every autostart goroutine's lifetime: cancelling it on
+	// shutdown lets Start's entry ctx check and WaitReady's ctx select exit
+	// fast, so wg.Wait() below doesn't stall the shutdown budget.
+	daemonCtx, daemonCancel := context.WithCancel(context.Background())
+	defer daemonCancel()
+	var autostartWG sync.WaitGroup
+
 	// autostart-flagged machines (fwb-ci pattern; launchd wiring lands in M4)
 	if machines, err := reg.List(); err == nil {
 		for _, m := range machines {
 			if m.Autostart {
+				autostartWG.Add(1)
 				go func(name string) {
+					defer autostartWG.Done()
+					if daemonCtx.Err() != nil {
+						return
+					}
 					logger.Info("autostarting", "machine", name)
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					ctx, cancel := context.WithTimeout(daemonCtx, 5*time.Minute)
 					defer cancel()
 					if err := mgr.Start(ctx, name); err != nil {
 						logger.Error("autostart failed", "machine", name, "err", err)
@@ -122,6 +135,9 @@ func run(logger *slog.Logger) error {
 	case s := <-sig:
 		logger.Info("shutting down", "signal", s.String())
 	}
+
+	daemonCancel()     // stop/short-circuit any in-flight or pending autostarts first
+	autostartWG.Wait() // let them exit before StopAll touches the same instances
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()

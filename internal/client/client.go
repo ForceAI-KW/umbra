@@ -24,8 +24,9 @@ type Client struct {
 
 type MachineView struct {
 	registry.Machine
-	State vm.State `json:"state"`
-	IP    string   `json:"ip,omitempty"`
+	State  vm.State `json:"state"`
+	IP     string   `json:"ip,omitempty"`
+	Zombie bool     `json:"zombie,omitempty"`
 }
 
 type CreateRequest struct {
@@ -67,7 +68,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		resp, err := c.http.Do(req)
 		if err != nil {
 			var opErr *net.OpError
-			if errors.As(err, &opErr) && attempt < len(backoffs) { // dial error → retry
+			if errors.As(err, &opErr) && opErr.Op == "dial" && attempt < len(backoffs) { // dial error → retry
 				lastErr = err
 				select {
 				case <-ctx.Done():

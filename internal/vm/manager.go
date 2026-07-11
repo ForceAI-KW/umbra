@@ -21,9 +21,10 @@ const (
 )
 
 type Info struct {
-	Name  string `json:"name"`
-	State State  `json:"state"`
-	IP    string `json:"ip,omitempty"`
+	Name   string `json:"name"`
+	State  State  `json:"state"`
+	IP     string `json:"ip,omitempty"`
+	Zombie bool   `json:"zombie,omitempty"`
 }
 
 type instance struct {
@@ -134,13 +135,33 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	return nil
 }
 
+// acquireOpMu acquires i.opMu without blocking indefinitely past ctx: it
+// tries a non-blocking TryLock, and on contention retries every 50ms while
+// racing ctx.Done(). This bounds how long Stop() (and therefore StopAll)
+// waits behind a concurrent in-flight Start/Stop, so a shutdown budget
+// actually bounds wall-clock time instead of blocking on a plain Lock.
+func acquireOpMu(ctx context.Context, i *instance, name string) error {
+	for {
+		if i.opMu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("stop %s: %w while waiting for in-flight operation", name, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
 // Stop tears down name's VM via stopWithEscalation. i.handle is cleared
 // ONLY when the stop is confirmed; if escalation never confirms a stopped
 // state (P9 zombie), the handle is left in place so Start() refuses to
 // double-launch against the same disk image.
 func (m *Manager) Stop(ctx context.Context, name string) error {
 	i := m.inst(name)
-	i.opMu.Lock()
+	if err := acquireOpMu(ctx, i, name); err != nil {
+		return err
+	}
 	defer i.opMu.Unlock()
 
 	i.mu.Lock()
@@ -198,7 +219,11 @@ func (m *Manager) Info(name string) Info {
 	i := m.inst(name)
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	return Info{Name: name, State: i.state, IP: i.ip}
+	// StateCrashed with a non-nil handle means a stop was never confirmed
+	// (P9 zombie) — the VM may still be alive; callers (e.g. DELETE) must
+	// treat it like Running, not like a clean crash.
+	zombie := i.state == StateCrashed && i.handle != nil
+	return Info{Name: name, State: i.state, IP: i.ip, Zombie: zombie}
 }
 
 func (m *Manager) List() []Info {

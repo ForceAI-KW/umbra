@@ -219,3 +219,47 @@ func TestStopAfterFailedLaunchDoesNotPanic(t *testing.T) {
 	}
 	m.StopAll(context.Background()) // must not panic either
 }
+
+// TestStopContextBoundedWhileStartInFlight covers finding 2: Stop's opMu
+// acquisition must be ctx-aware (acquireOpMu). While a slow Start holds
+// i.opMu (launch in flight), a concurrent Stop with a short-deadline ctx
+// must return promptly with a wrapped ctx error instead of blocking past
+// the deadline — otherwise a shutdown budget wouldn't actually bound
+// StopAll.
+func TestStopContextBoundedWhileStartInFlight(t *testing.T) {
+	m, reg := newTestManager(t)
+	saveMachine(t, reg, "vm1")
+
+	launchStarted := make(chan struct{})
+	release := make(chan struct{})
+	withLaunchFn(t, func(mc *registry.Machine, machinesDir string) (vzHandle, func(), error) {
+		close(launchStarted)
+		<-release
+		return &fakeVZ{state: vzRunning}, func() {}, nil
+	})
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- m.Start(context.Background(), "vm1") }()
+	<-launchStarted // Start now holds i.opMu, blocked inside the fake launch call
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	stopStart := time.Now()
+	err := m.Stop(stopCtx, "vm1")
+	elapsed := time.Since(stopStart)
+	if err == nil {
+		t.Fatal("want ctx error while opMu is held by an in-flight Start")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want error wrapping context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("Stop blocked past its ctx deadline: took %v", elapsed)
+	}
+
+	close(release)
+	if err := <-startDone; err != nil {
+		t.Fatalf("start: %v", err)
+	}
+}

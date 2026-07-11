@@ -37,8 +37,9 @@ func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready fun
 
 type MachineView struct {
 	registry.Machine
-	State vm.State `json:"state"`
-	IP    string   `json:"ip,omitempty"`
+	State  vm.State `json:"state"`
+	IP     string   `json:"ip,omitempty"`
+	Zombie bool     `json:"zombie,omitempty"`
 }
 
 type CreateRequest struct {
@@ -83,7 +84,7 @@ func hostBuild() string {
 
 func (s *Server) view(m *registry.Machine) MachineView {
 	info := s.lc.Info(m.Name)
-	return MachineView{Machine: *m, State: info.State, IP: info.IP}
+	return MachineView{Machine: *m, State: info.State, IP: info.IP, Zombie: info.Zombie}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -193,8 +194,13 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 404, err)
 			return
 		}
-		if s.lc.Info(name).State == vm.StateRunning {
+		info := s.lc.Info(name)
+		if info.State == vm.StateRunning {
 			writeErr(w, 409, fmt.Errorf("machine %q is running; stop it first", name))
+			return
+		}
+		if info.Zombie {
+			writeErr(w, 409, fmt.Errorf("machine %q crashed with an unconfirmed stop; run stop again before delete", name))
 			return
 		}
 		if err := s.reg.Delete(name); err != nil {
