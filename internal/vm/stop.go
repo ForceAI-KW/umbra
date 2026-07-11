@@ -1,0 +1,59 @@
+package vm
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+type vzState int
+
+const (
+	vzStopped vzState = iota
+	vzRunning
+	vzOther
+)
+
+// vzHandle is the minimal seam over *vz.VirtualMachine so escalation logic
+// is unit-testable off-mac.
+type vzHandle interface {
+	Start() error
+	RequestStop() (bool, error)
+	Stop() error
+	State() vzState
+}
+
+// stopWithEscalation: graceful ACPI RequestStop → gracefulTimeout → hard
+// Stop() → poll until confirmed stopped within hardTimeout (P8, P9). Never
+// trust a stop call on send — only on observed state.
+func stopWithEscalation(ctx context.Context, h vzHandle, gracefulTimeout, hardTimeout time.Duration) error {
+	_ = guarded("request-stop", func() error {
+		_, err := h.RequestStop()
+		return err
+	}) // errors fall through to hard path
+	if waitState(ctx, h, vzStopped, gracefulTimeout) {
+		return nil
+	}
+	if err := guarded("hard-stop", h.Stop); err != nil {
+		return fmt.Errorf("hard stop failed: %w", err)
+	}
+	if waitState(ctx, h, vzStopped, hardTimeout) {
+		return nil
+	}
+	return fmt.Errorf("vm did not reach stopped state within %s after hard kill (zombie — P9)", hardTimeout)
+}
+
+func waitState(ctx context.Context, h vzHandle, want vzState, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if h.State() == want {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return h.State() == want
+}
