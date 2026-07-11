@@ -56,6 +56,9 @@ func (r *Registry) Save(m *Machine) error {
 }
 
 func (r *Registry) Load(name string) (*Machine, error) {
+	if !ValidName(name) {
+		return nil, ErrNotFound // also blocks path traversal via crafted names
+	}
 	b, err := os.ReadFile(r.configPath(name))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound

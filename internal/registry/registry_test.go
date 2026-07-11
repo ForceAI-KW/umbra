@@ -60,3 +60,13 @@ func TestValidName(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAndDeleteRejectTraversalNames(t *testing.T) {
+	r := newTestRegistry(t)
+	if _, err := r.Load("../../etc"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Load traversal: want ErrNotFound, got %v", err)
+	}
+	if err := r.Delete("../../etc"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Delete traversal: want ErrNotFound, got %v", err)
+	}
+}
