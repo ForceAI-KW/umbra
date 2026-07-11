@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,17 +37,19 @@ func Ensure(ctx context.Context, imagesDir, ref string) (string, error) {
 	rawPath := rawCachePath(imagesDir, ref)
 	if _, err := os.Stat(rawPath); err == nil {
 		return rawPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
 	url, sumsURL, fileName, err := Resolve(ref)
 	if err != nil {
 		return "", err
 	}
 	qcowTmp := rawPath + ".qcow2.tmp"
+	defer os.Remove(qcowTmp) // cleans up partial downloads too
 	sum, err := download(ctx, url, qcowTmp)
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(qcowTmp)
 	sums, err := fetch(ctx, sumsURL)
 	if err != nil {
 		return "", err
@@ -137,12 +140,21 @@ func convertToRaw(qcowPath, dst string) error {
 	// sequential copy of the virtual disk content
 	if _, err := io.Copy(out, io.NewSectionReader(img, 0, img.Size())); err != nil {
 		out.Close()
+		os.Remove(dst)
 		return err
 	}
 	return out.Close()
 }
 
 func CloneDisk(rawBase, dst string, sizeGiB uint64) error {
+	if err := cloneFile(rawBase, dst); err != nil {
+		return err
+	}
+	return os.Truncate(dst, int64(sizeGiB)<<30)
+}
+
+// copyFile is the portable fallback used when an APFS clone isn't possible.
+func copyFile(rawBase, dst string) error {
 	src, err := os.Open(rawBase)
 	if err != nil {
 		return err
@@ -154,10 +166,8 @@ func CloneDisk(rawBase, dst string, sizeGiB uint64) error {
 	}
 	if _, err := io.Copy(out, src); err != nil {
 		out.Close()
+		os.Remove(dst)
 		return err
 	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return os.Truncate(dst, int64(sizeGiB)<<30)
+	return out.Close()
 }
