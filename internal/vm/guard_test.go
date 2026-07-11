@@ -20,3 +20,26 @@ func TestGuardedPassesThroughError(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+type panicOnStateVZ struct{ fakeVZ }
+
+func (f *panicOnStateVZ) State() vzState {
+	panic("runtime/cgo: misuse of an invalid Handle")
+}
+
+func TestGuardedStateRecoversPanicToVzUnknown(t *testing.T) {
+	got := guardedState(&panicOnStateVZ{})
+	if got != vzUnknown {
+		t.Fatalf("want vzUnknown, got %v", got)
+	}
+	if got == vzStopped {
+		t.Fatal("a panicked State() read must never be reported as vzStopped")
+	}
+}
+
+func TestGuardedStatePassesThroughRealState(t *testing.T) {
+	f := &fakeVZ{state: vzRunning}
+	if got := guardedState(f); got != vzRunning {
+		t.Fatalf("want vzRunning, got %v", got)
+	}
+}

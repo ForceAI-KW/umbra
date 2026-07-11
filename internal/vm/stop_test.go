@@ -61,3 +61,14 @@ func TestStopReportsFailureWhenNeverConfirmed(t *testing.T) {
 		t.Fatal("want error when stop never confirmed")
 	}
 }
+
+func TestStopNeverConfirmedWhenStateReadsPanic(t *testing.T) {
+	// State() panics on every read (cgo/ObjC boundary misuse, P1). Even
+	// though RequestStop/Stop "succeed", a panicking poll must never be
+	// mistaken for a confirmed stop — waitState must see vzUnknown, not
+	// vzStopped, and stopWithEscalation must report failure (P9).
+	f := &panicOnStateVZ{fakeVZ{state: vzRunning, honorGraceful: true, honorHard: true}}
+	if err := stopWithEscalation(context.Background(), f, 20*time.Millisecond, 50*time.Millisecond); err == nil {
+		t.Fatal("want error when State() reads panic throughout")
+	}
+}

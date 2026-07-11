@@ -12,6 +12,10 @@ const (
 	vzStopped vzState = iota
 	vzRunning
 	vzOther
+	// vzUnknown is returned when a State() read panics (guardedState). It is
+	// a distinct sentinel from vzStopped/vzRunning/vzOther and must never be
+	// treated as a confirmed stop.
+	vzUnknown
 )
 
 // vzHandle is the minimal seam over *vz.VirtualMachine so escalation logic
@@ -43,10 +47,13 @@ func stopWithEscalation(ctx context.Context, h vzHandle, gracefulTimeout, hardTi
 	return fmt.Errorf("vm did not reach stopped state within %s after hard kill (zombie — P9)", hardTimeout)
 }
 
+// waitState polls h's state via guardedState (never a raw h.State() call —
+// P1: a panic mid-teardown must not crash the poller, and a panicked read
+// must never be mistaken for a confirmed stop).
 func waitState(ctx context.Context, h vzHandle, want vzState, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if h.State() == want {
+		if guardedState(h) == want {
 			return true
 		}
 		select {
@@ -55,5 +62,5 @@ func waitState(ctx context.Context, h vzHandle, want vzState, timeout time.Durat
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return h.State() == want
+	return guardedState(h) == want
 }

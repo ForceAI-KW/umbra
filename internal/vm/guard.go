@@ -18,3 +18,17 @@ func guarded(op string, fn func() error) (err error) {
 	}()
 	return fn()
 }
+
+// guardedState safely reads h.State(), recovering a panic at the cgo/ObjC
+// boundary (Code-Hex/vz#124) instead of letting it propagate mid-teardown.
+// A panicked read returns vzUnknown, which must never satisfy a
+// waitState(want=vzStopped) check — a failed read must never be mistaken
+// for a confirmed stop.
+func guardedState(h vzHandle) (state vzState) {
+	defer func() {
+		if r := recover(); r != nil {
+			state = vzUnknown
+		}
+	}()
+	return h.State()
+}

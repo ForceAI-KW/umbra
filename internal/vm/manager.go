@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -26,11 +27,21 @@ type Info struct {
 }
 
 type instance struct {
+	// opMu serializes Start/Stop for this instance so only one lifecycle
+	// operation runs at a time. It is held for the whole operation.
+	opMu sync.Mutex
+
+	// mu guards field access only (state/ip/handle reads and flips). It is
+	// released during the (multi-second) launch/stop calls so Info/List
+	// remain responsive — e.g. observing StateStarting — while a lifecycle
+	// operation is in flight.
 	mu     sync.Mutex
 	state  State
 	ip     string
 	handle vzHandle
-	stopFn func() // releases run loop resources (darwin)
+	// stopFn is reserved for future resource cleanup (e.g. releasing run
+	// loop resources on darwin); it is currently always a no-op.
+	stopFn func()
 }
 
 type Manager struct {
@@ -39,6 +50,12 @@ type Manager struct {
 	mu          sync.Mutex
 	instances   map[string]*instance
 }
+
+// launchFn launches a vz VM for m, returning the handle and a cleanup
+// closure. It is nil on platforms without a vz build (config_darwin.go sets
+// it via init() on darwin/arm64). Tests override it directly (save/restore)
+// to inject fakes.
+var launchFn func(m *registry.Machine, machinesDir string) (vzHandle, func(), error)
 
 func NewManager(reg *registry.Registry, machinesDir string) *Manager {
 	return &Manager{reg: reg, machinesDir: machinesDir, instances: map[string]*instance{}}
@@ -55,21 +72,61 @@ func (m *Manager) inst(name string) *instance {
 	return i
 }
 
+// Start launches name's VM, or is a no-op if it is already running/starting.
+// It refuses to launch when the instance still holds a handle from a stop
+// that never confirmed (P9 zombie) — retry only after a successful Stop.
+//
+// ctx is checked at entry and immediately before the launch call; the vz
+// launch itself (launchFn) is not cancellable once started, so a cancelled
+// ctx cannot abort a launch already in flight.
 func (m *Manager) Start(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	cfg, err := m.reg.Load(name)
 	if err != nil {
 		return err
 	}
+
 	i := m.inst(name)
+	i.opMu.Lock()
+	defer i.opMu.Unlock()
+
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if i.state == StateRunning || i.state == StateStarting {
+		i.mu.Unlock()
 		return nil
 	}
+	if i.handle != nil {
+		i.mu.Unlock()
+		return fmt.Errorf("machine %s has a live or zombie VM handle; run stop first (previous stop failed to confirm)", name)
+	}
 	i.state = StateStarting
-	h, stopFn, err := launchVZ(cfg, m.machinesDir) // darwin-only; guarded inside
+	i.mu.Unlock()
+
+	if launchFn == nil {
+		i.mu.Lock()
+		i.state = StateCrashed
+		i.mu.Unlock()
+		return errors.New("vm launch not supported on this platform")
+	}
+
+	if err := ctx.Err(); err != nil {
+		i.mu.Lock()
+		i.state = StateStopped // nothing launched yet; handle is still nil
+		i.mu.Unlock()
+		return err
+	}
+
+	h, stopFn, err := launchFn(cfg, m.machinesDir) // darwin-only; guarded inside
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if err != nil {
 		i.state = StateCrashed
+		// i.handle stays nil: a launch failure never leaves a live/zombie
+		// handle behind, so retry is allowed on the next Start().
 		return fmt.Errorf("launch %s: %w", name, err)
 	}
 	i.handle, i.stopFn = h, stopFn
@@ -77,24 +134,41 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	return nil
 }
 
+// Stop tears down name's VM via stopWithEscalation. i.handle is cleared
+// ONLY when the stop is confirmed; if escalation never confirms a stopped
+// state (P9 zombie), the handle is left in place so Start() refuses to
+// double-launch against the same disk image.
 func (m *Manager) Stop(ctx context.Context, name string) error {
 	i := m.inst(name)
+	i.opMu.Lock()
+	defer i.opMu.Unlock()
+
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if i.state != StateRunning && i.state != StateCrashed {
+		i.mu.Unlock()
 		return nil
 	}
+	handle, stopFn := i.handle, i.stopFn
 	i.state = StateStopping
-	err := stopWithEscalation(ctx, i.handle, 30*time.Second, 60*time.Second)
-	if i.stopFn != nil {
-		i.stopFn()
+	i.mu.Unlock()
+
+	err := stopWithEscalation(ctx, handle, 30*time.Second, 60*time.Second)
+	if stopFn != nil {
+		stopFn()
 	}
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if err != nil {
 		i.state = StateCrashed
+		// handle intentionally NOT cleared: stop was never confirmed, so
+		// Start() must refuse until a future Stop() succeeds.
 		return err
 	}
 	i.state = StateStopped
 	i.ip = ""
+	i.handle = nil
+	i.stopFn = nil
 	return nil
 }
 

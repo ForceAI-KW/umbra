@@ -14,10 +14,16 @@ import (
 	"github.com/ForceAI-KW/umbra/internal/registry"
 )
 
+// init wires the manager's testable launchFn seam to the real vz launch on
+// darwin/arm64; on other platforms launchFn stays nil and Start() errors.
+func init() {
+	launchFn = launchVZ
+}
+
 // realVZ adapts *vz.VirtualMachine to vzHandle.
 type realVZ struct{ vm *vz.VirtualMachine }
 
-func (r *realVZ) Start() error               { return r.vm.Start() }
+func (r *realVZ) Start() error               { return guarded("start", func() error { return r.vm.Start() }) }
 func (r *realVZ) RequestStop() (bool, error) { return r.vm.RequestStop() }
 func (r *realVZ) Stop() error                { return r.vm.Stop() }
 func (r *realVZ) State() vzState {
@@ -87,7 +93,10 @@ func launchVZ(m *registry.Machine, machinesDir string) (vzHandle, func(), error)
 		cfg.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netCfg})
 
 		// virtiofs: share $HOME as tag "home" (mounted at /mnt/mac by cloud-init)
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home directory: %w", err)
+		}
 		fsCfg, err := vz.NewVirtioFileSystemDeviceConfiguration("home")
 		if err != nil {
 			return err
