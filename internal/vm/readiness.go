@@ -20,13 +20,14 @@ func (e *stageError) Error() string {
 }
 
 func WaitReady(ctx context.Context, lookupIP func() (string, bool, error), dial func(addr string) error, timeout time.Duration) (string, error) {
-	deadline := time.Now().Add(timeout)
+	start := time.Now()
+	deadline := start.Add(timeout)
 	tick := func() { time.Sleep(1 * time.Second) }
 
 	var ip string
 	for {
 		if time.Now().After(deadline) {
-			return "", &stageError{Stage: "ip", Detail: "no DHCP lease appeared for machine MAC (check /var/db/dhcpd_leases and console.log)"}
+			return "", &stageError{Stage: "ip", Detail: fmt.Sprintf("no DHCP lease appeared for machine MAC after %s (check /var/db/dhcpd_leases and console.log)", time.Since(start).Round(time.Second))}
 		}
 		got, ok, err := lookupIP()
 		if err != nil {
@@ -44,10 +45,15 @@ func WaitReady(ctx context.Context, lookupIP func() (string, bool, error), dial 
 		}
 	}
 
+	dialAttempts := 0
 	for {
 		if time.Now().After(deadline) {
-			return "", &stageError{Stage: "ssh", Detail: fmt.Sprintf("port 22 on %s never accepted (guest booted but sshd/cloud-init not ready — check console.log)", ip)}
+			if dialAttempts == 0 {
+				return "", &stageError{Stage: "ssh", Detail: fmt.Sprintf("ip stage consumed the whole %s readiness budget (lease %s arrived late); ssh was never attempted", timeout, ip)}
+			}
+			return "", &stageError{Stage: "ssh", Detail: fmt.Sprintf("port 22 on %s never accepted after %d attempts in %s (guest booted but sshd/cloud-init not ready — check console.log)", ip, dialAttempts, time.Since(start).Round(time.Second))}
 		}
+		dialAttempts++
 		if dial(ip+":22") == nil {
 			return ip, nil
 		}
