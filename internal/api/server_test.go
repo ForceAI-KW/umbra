@@ -390,3 +390,15 @@ func TestForwardDeleteValidatesPortAndProtocol(t *testing.T) {
 		t.Fatalf("bad protocol: got %d, want 400", resp.StatusCode)
 	}
 }
+
+func TestForwardRemoveRejectsUnownedPort(t *testing.T) {
+	ts, _, _ := newForwardTestServer(t)
+	postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "fo"})
+	postJSON(t, ts.URL+"/v1/machines/fo/start", nil)
+	// No forward exposed for fo — delete must 404, not blindly unexpose.
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/machines/fo/forwards/2222", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	if resp.StatusCode != 404 {
+		t.Fatalf("delete unowned forward: %d, want 404", resp.StatusCode)
+	}
+}

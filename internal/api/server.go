@@ -311,7 +311,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("DELETE /v1/machines/{name}/forwards/{local_port}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
-		if _, err := s.reg.Load(name); err != nil {
+		m, err := s.reg.Load(name)
+		if err != nil {
 			writeErr(w, 404, err)
 			return
 		}
@@ -332,7 +333,23 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 400, fmt.Errorf("invalid protocol %q, want \"tcp\" or \"udp\"", proto))
 			return
 		}
+		// Ownership: only remove a forward that actually targets THIS
+		// machine's guest IP, so `rm` on one machine can't tear down
+		// another's (e.g. its auto-SSH forward) by local port.
 		local := fmt.Sprintf("127.0.0.1:%d", localPort)
+		owned := false
+		if all, err := s.fwd.Forwards(); err == nil && m.IP != "" {
+			for _, f := range all {
+				if f.Local == local && strings.HasPrefix(f.Remote, m.IP+":") {
+					owned = true
+					break
+				}
+			}
+		}
+		if !owned {
+			writeErr(w, 404, fmt.Errorf("no %s forward on port %d for machine %q", proto, localPort, name))
+			return
+		}
 		if err := s.fwd.Unexpose(proto, local); err != nil {
 			writeErr(w, 500, err)
 			return

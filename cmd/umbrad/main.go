@@ -50,6 +50,7 @@ func (a forwarderAdapter) Forwards() ([]api.ForwardView, error) {
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	slog.SetDefault(logger) // so components using slog.Default() (supervisor) share this handler
 	if err := run(logger); err != nil {
 		logger.Error("umbrad exiting", "err", err)
 		os.Exit(1)
@@ -122,7 +123,12 @@ func run(logger *slog.Logger) error {
 		ip, err := vm.WaitReady(ctx,
 			func() (string, bool, error) { return m.IP, true, nil }, // IP is known at create time (static addressing); no lease wait
 			func(addr string) error {
-				c, err := st.DialContextTCP(ctx, addr)
+				// Per-attempt deadline so a booted-then-silent guest can't
+				// consume the whole WaitReady budget on one blocked dial —
+				// WaitReady's 90s bound (P6) only checks between attempts.
+				dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				defer cancel()
+				c, err := st.DialContextTCP(dialCtx, addr)
 				if err == nil {
 					c.Close()
 				}
