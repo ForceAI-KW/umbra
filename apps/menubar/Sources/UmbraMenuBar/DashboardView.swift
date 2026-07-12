@@ -58,7 +58,8 @@ struct DashboardView: View {
                     } label: {
                         Label("New Machine", systemImage: "plus")
                     }
-                    .help("Create a new Linux machine")
+                    .keyboardShortcut("n", modifiers: .command)
+                    .help("Create a new Linux machine (⌘N)")
                 }
             }
         }
@@ -166,6 +167,23 @@ struct DashboardView: View {
                         }
                     }
                     .buttonStyle(.borderless)
+                } else {
+                    Button {
+                        Task { await model.installDocker() }
+                    } label: {
+                        if model.busy.contains("docker") {
+                            HStack(spacing: 5) {
+                                ProgressView().controlSize(.small)
+                                Text("Installing…").font(.caption)
+                            }
+                        } else {
+                            Text("Install")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.busy.contains("docker") || model.cliMissing)
+                    .help("Provision and start the Docker VM")
                 }
             }
             footerRow(icon: "cpu", label: "Rosetta") {

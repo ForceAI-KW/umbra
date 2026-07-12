@@ -46,6 +46,16 @@ final class CLIClientTests: XCTestCase {
         XCTAssertEqual(args, ["create", "dev", "--cpus", "4", "--memory-gib", "8", "--disk-gib", "60"])
     }
 
+    func testCreateArgsAppendsRoleWhenPresent() {
+        let args = createArgs(name: "fwb-ci2", cpus: 8, memoryGiB: 8, diskGiB: 60, role: "ci-runner")
+        XCTAssertEqual(args, ["create", "fwb-ci2", "--cpus", "8", "--memory-gib", "8", "--disk-gib", "60", "--role", "ci-runner"])
+    }
+
+    func testCreateArgsOmitsRoleWhenEmpty() {
+        let args = createArgs(name: "dev", cpus: 2, memoryGiB: 4, diskGiB: 20, role: "")
+        XCTAssertEqual(args, ["create", "dev", "--cpus", "2", "--memory-gib", "4", "--disk-gib", "20"])
+    }
+
     // MARK: - parseRosettaStatus
 
     func testParseRosettaStatusInstalled() {
