@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ForceAI-KW/umbra/internal/client"
+	"github.com/ForceAI-KW/umbra/internal/registry"
 )
 
 var (
@@ -21,6 +22,9 @@ var createCmd = &cobra.Command{
 	Short: "Create a new Linux machine",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if registry.IsReserved(args[0]) {
+			return fmt.Errorf("%q is reserved — use 'umbra docker install'", args[0])
+		}
 		fmt.Printf("creating %s (first run downloads the Ubuntu image, ~600MB)...\n", args[0])
 		mv, err := apiClient.CreateMachine(cmd.Context(), client.CreateRequest{
 			Name: args[0], CPUs: flagCPUs, MemoryMiB: flagMemoryGiB * 1024,

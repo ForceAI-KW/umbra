@@ -43,16 +43,40 @@ type Forwarder interface {
 	Forwards() ([]ForwardView, error)
 }
 
-type Server struct {
-	reg   *registry.Registry
-	lc    Lifecycle
-	prov  Provisioner
-	ready func(ctx context.Context, m *registry.Machine) (string, error)
-	fwd   Forwarder
+// Docker is the seam over the reserved docker-role machine's
+// install/start/stop/status/uninstall lifecycle. Implemented in cmd/umbrad
+// (which owns the dockerbridge.Bridge and the docker CLI context
+// registration) so this package stays docker-unaware beyond routing —
+// vm.Manager and internal/api never import internal/dockerbridge or
+// internal/dockerctx.
+type Docker interface {
+	Install(ctx context.Context) (MachineView, error)
+	Start(ctx context.Context) (MachineView, error)
+	Stop(ctx context.Context) error
+	Status(ctx context.Context) DockerStatus
+	Uninstall(ctx context.Context) error
 }
 
-func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready func(ctx context.Context, m *registry.Machine) (string, error), fwd Forwarder) *Server {
-	return &Server{reg: reg, lc: lc, prov: prov, ready: ready, fwd: fwd}
+// DockerStatus is GET /v1/docker/status's response shape.
+type DockerStatus struct {
+	Installed      bool   `json:"installed"`
+	Running        bool   `json:"running"`
+	IP             string `json:"ip,omitempty"`
+	Socket         string `json:"socket,omitempty"`
+	ContextCurrent bool   `json:"context_current"`
+}
+
+type Server struct {
+	reg    *registry.Registry
+	lc     Lifecycle
+	prov   Provisioner
+	ready  func(ctx context.Context, m *registry.Machine) (string, error)
+	fwd    Forwarder
+	docker Docker
+}
+
+func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready func(ctx context.Context, m *registry.Machine) (string, error), fwd Forwarder, docker Docker) *Server {
+	return &Server{reg: reg, lc: lc, prov: prov, ready: ready, fwd: fwd, docker: docker}
 }
 
 type MachineView struct {
@@ -130,6 +154,9 @@ func (s *Server) Handler() http.Handler {
 		}
 		out := make([]MachineView, 0, len(machines))
 		for _, m := range machines {
+			if m.Role != "" { // reserved machines (the docker VM) are hidden from the normal list
+				continue
+			}
 			out = append(out, s.view(m))
 		}
 		writeJSON(w, 200, out)
@@ -143,6 +170,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		if !registry.ValidName(req.Name) {
 			writeErr(w, 400, fmt.Errorf("invalid machine name %q", req.Name))
+			return
+		}
+		if registry.IsReserved(req.Name) {
+			writeErr(w, 400, fmt.Errorf("%q is reserved — use 'umbra docker install'", req.Name))
 			return
 		}
 		if _, err := s.reg.Load(req.Name); err == nil {
@@ -351,6 +382,44 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if err := s.fwd.Unexpose(proto, local); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("POST /v1/docker/install", func(w http.ResponseWriter, r *http.Request) {
+		mv, err := s.docker.Install(r.Context())
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 201, mv)
+	})
+
+	mux.HandleFunc("POST /v1/docker/start", func(w http.ResponseWriter, r *http.Request) {
+		mv, err := s.docker.Start(r.Context())
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, mv)
+	})
+
+	mux.HandleFunc("POST /v1/docker/stop", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.docker.Stop(r.Context()); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("GET /v1/docker/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, s.docker.Status(r.Context()))
+	})
+
+	mux.HandleFunc("POST /v1/docker/uninstall", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.docker.Uninstall(r.Context()); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
