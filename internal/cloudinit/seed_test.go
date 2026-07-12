@@ -44,6 +44,13 @@ func TestBuildSeedProducesCidataISO(t *testing.T) {
 	if !ok {
 		t.Fatalf("no user-data in ISO; got %v", keys(found))
 	}
+	nc, ok := found["network-config"]
+	if !ok {
+		t.Fatalf("no network-config in ISO; got %v", keys(found))
+	}
+	if !strings.Contains(nc, "dhcp-identifier: mac") {
+		t.Fatalf("network-config missing dhcp-identifier: mac (DUID lease trap):\n%s", nc)
+	}
 	for _, want := range []string{"#cloud-config", "ssh-ed25519 AAAATEST umbra", "name: umbra", "/mnt/mac", "virtiofs", "chrony", "local-hostname: t1"} {
 		joined := ud + found["meta-data"]
 		if !strings.Contains(joined, want) {

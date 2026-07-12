@@ -13,7 +13,9 @@ test:
 	go test ./... -count=1
 
 test-integration: build
-	go test -tags=integration ./... -count=1 -timeout 15m
+	go test -tags=integration -c -o bin/vm.test ./internal/vm
+	codesign --force --entitlements build/vz.entitlements --sign - bin/vm.test
+	./bin/vm.test -test.v -test.timeout 15m
 
 lint:
 	gofmt -l . && test -z "$$(gofmt -l .)"

@@ -34,6 +34,20 @@ const metaDataTmpl = `instance-id: umbra-%s
 local-hostname: %s
 `
 
+// networkConfig forces the DHCP client identifier to be the interface MAC
+// (netplan dhcp-identifier: mac). Without it, Ubuntu's systemd-networkd
+// sends an RFC-4361 DUID, macOS bootpd records that DUID as hw_address
+// (type ff), and vmnet's MAC-based lease lookup can never find the guest
+// (verified live: itest VM leased as "ff,f1:f5:dd:..."). Same fix Lima uses.
+const networkConfig = `version: 2
+ethernets:
+  all:
+    match:
+      name: "en*"
+    dhcp4: true
+    dhcp-identifier: mac
+`
+
 // BuildSeed writes <machineDir>/seed.iso. sshPub must be a single-line
 // authorized_keys entry (as produced by sshkey.Ensure) — it is interpolated
 // into YAML, so anything else is rejected to keep first-boot config
@@ -54,6 +68,9 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string) (string, error) {
 		return "", err
 	}
 	if err := w.AddFile(strings.NewReader(metaData), "meta-data"); err != nil {
+		return "", err
+	}
+	if err := w.AddFile(strings.NewReader(networkConfig), "network-config"); err != nil {
 		return "", err
 	}
 
