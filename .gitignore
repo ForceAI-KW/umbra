@@ -3,3 +3,4 @@ bin/
 *.iso
 .DS_Store
 coverage.out
+apps/menubar/.build/
