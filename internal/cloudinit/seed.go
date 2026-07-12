@@ -124,13 +124,16 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string, hosts map[string]
 }
 
 // runcmdSection assembles the single cloud-config runcmd: block cloud-init
-// permits, merging hosts-propagation lines with the docker provisioning
-// lines (when role is the reserved docker machine). Returns "" (no runcmd
-// section) when there are no lines to emit.
+// permits, merging hosts-propagation lines with the docker/ci-runner
+// provisioning lines (when role matches). Returns "" (no runcmd section)
+// when there are no lines to emit.
 func runcmdSection(hosts map[string]string, role string) string {
 	lines := hostsRuncmdLines(hosts)
-	if role == registry.ReservedDockerName {
+	switch role {
+	case registry.ReservedDockerName:
 		lines = append(lines, dockerRuncmdLines()...)
+	case registry.RoleCIRunner:
+		lines = append(lines, ciRunnerRuncmdLines()...)
 	}
 	if len(lines) == 0 {
 		return ""
@@ -194,5 +197,20 @@ func dockerRuncmdLines() []string {
 		// interactive "save current rules?" debconf prompt hanging boot.
 		"DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent",
 		"netfilter-persistent save",
+	}
+}
+
+// ciRunnerRuncmdLines renders the docker provisioning runcmd lines for a
+// GitHub Actions self-hosted CI runner (docs/research/launchd-and-ci-cutover.md
+// §4). Deliberately a subset of dockerRuncmdLines: plain docker via
+// get.docker.com, no dockerWriteFiles systemd override and no tcp:2375
+// iptables rule — a CI runner's dockerd must stay local-socket only, since
+// it runs untrusted PR code and must never be reachable over the network.
+func ciRunnerRuncmdLines() []string {
+	return []string{
+		"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)",
+		"usermod -aG docker umbra",
+		"systemctl enable docker",
+		"systemctl restart docker",
 	}
 }

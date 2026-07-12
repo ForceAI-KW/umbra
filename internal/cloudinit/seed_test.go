@@ -117,6 +117,64 @@ func TestBuildDockerSeed(t *testing.T) {
 	}
 }
 
+func TestBuildCIRunnerSeed(t *testing.T) {
+	dir := t.TempDir()
+	m := &registry.Machine{Name: "fwb-ci2", CPUs: 4, MemoryMiB: 8192, DiskGiB: 60, Image: "ubuntu:noble", IP: "192.168.127.30", Role: registry.RoleCIRunner}
+	iso, err := BuildSeed(m, dir, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := readISOFile(t, iso, "user-data")
+	nc := readISOFile(t, iso, "network-config")
+
+	for _, want := range []string{
+		"get.docker.com",
+		"usermod -aG docker umbra",
+		"systemctl restart docker",
+		"ssh-ed25519 AAAATEST umbra", // ssh key still present
+	} {
+		if !strings.Contains(ud, want) {
+			t.Fatalf("ci-runner user-data missing %q:\n%s", want, ud)
+		}
+	}
+	for _, unwanted := range []string{"tcp://0.0.0.0:2375", "--dport 2375"} {
+		if strings.Contains(ud, unwanted) {
+			t.Fatalf("ci-runner user-data must not expose dockerd (%q found):\n%s", unwanted, ud)
+		}
+	}
+	if want := `addresses: [ "192.168.127.30/24" ]`; !strings.Contains(nc, want) { // static netplan still present
+		t.Fatalf("ci-runner network-config missing %q:\n%s", want, nc)
+	}
+	if n := strings.Count(ud, "runcmd:"); n != 1 {
+		t.Fatalf("expected exactly one runcmd: key, got %d:\n%s", n, ud)
+	}
+
+	// A docker-role machine must still get the 2375 exposure (didn't break
+	// the docker profile).
+	dirDocker := t.TempDir()
+	mDocker := &registry.Machine{Name: "docker", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20, Image: "ubuntu:noble", IP: "192.168.127.31", Role: registry.ReservedDockerName}
+	isoDocker, err := BuildSeed(mDocker, dirDocker, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	udDocker := readISOFile(t, isoDocker, "user-data")
+	if !strings.Contains(udDocker, "2375") {
+		t.Fatalf("docker-role user-data unexpectedly lost 2375 exposure:\n%s", udDocker)
+	}
+
+	// A normal machine (no role) must get neither profile.
+	dirPlain := t.TempDir()
+	mPlain := &registry.Machine{Name: "t5", CPUs: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu:noble", IP: "192.168.127.32"}
+	isoPlain, err := BuildSeed(mPlain, dirPlain, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	udPlain := readISOFile(t, isoPlain, "user-data")
+	if strings.Contains(udPlain, "get.docker.com") || strings.Contains(udPlain, "2375") {
+		t.Fatalf("plain machine's user-data unexpectedly contains docker/ci-runner provisioning:\n%s", udPlain)
+	}
+}
+
 func readISOFile(t *testing.T, isoPath, name string) string {
 	t.Helper()
 	f, err := os.Open(isoPath)
