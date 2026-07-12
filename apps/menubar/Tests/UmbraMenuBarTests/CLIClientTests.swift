@@ -72,11 +72,24 @@ final class CLIClientTests: XCTestCase {
 
     // MARK: - adminInstallScript
 
-    func testAdminInstallScriptContainsCpCodesignAndEntitlements() {
-        let script = adminInstallScript(umbra: "/bundle/umbra", umbrad: "/bundle/umbrad", entitlements: "/bundle/vz.entitlements")
+    func testAdminInstallScriptTightensUmbradSigningAndLeavesUmbraPlain() {
+        let entitlements = "/bundle/vz.entitlements"
+        let script = adminInstallScript(umbra: "/bundle/umbra", umbrad: "/bundle/umbrad", entitlements: entitlements)
+
         XCTAssertTrue(script.contains("cp"))
-        XCTAssertTrue(script.contains("codesign"))
-        XCTAssertTrue(script.contains("/bundle/vz.entitlements"))
         XCTAssertTrue(script.contains("with administrator privileges"))
+
+        // umbrad must be re-signed WITH its virtualization entitlements — a
+        // regression that drops `--entitlements` here would silently break
+        // Virtualization.framework at runtime. Assert the exact substring
+        // (not independent .contains checks) so this test actually fails
+        // if `--entitlements` is ever removed from umbrad's codesign call.
+        XCTAssertTrue(script.contains("codesign --force --entitlements '\(entitlements)' --sign - /usr/local/bin/umbrad"))
+
+        // umbra itself must be signed plain (no entitlements): assert the
+        // exact trailing codesign line, and that --entitlements never
+        // precedes umbra's own sign step.
+        XCTAssertTrue(script.contains("codesign --force --sign - /usr/local/bin/umbra\""))
+        XCTAssertFalse(script.contains("--entitlements '\(entitlements)' --sign - /usr/local/bin/umbra\""))
     }
 }

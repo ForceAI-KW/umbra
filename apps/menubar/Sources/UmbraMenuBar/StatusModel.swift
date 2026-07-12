@@ -12,6 +12,10 @@ final class StatusModel: ObservableObject {
     @Published var busy: Set<String> = []
     @Published var rosettaStatus: String = "unknown"
     @Published var onboardingNeeded: Bool = false
+    /// True once the daemon reports "up" — the inverse of the "daemon down"
+    /// half of `onboardingNeeded`. Read by the future Settings pane; no UI
+    /// consumes it yet.
+    @Published var daemonInstalled: Bool = false
 
     /// Standard install location LaunchAgent's `--bin` points at (§3,
     /// docs/research/full-app-and-dmg.md — Option A), also what
@@ -91,9 +95,16 @@ final class StatusModel: ObservableObject {
         } catch {
             status = StatusResponse(daemon: "down", error: "\(error)", machines: nil, docker: nil)
         }
-        if let rosettaResult = try? await cli.rosetta() {
-            rosettaStatus = rosettaResult
+        // Rosetta availability never changes at runtime, so fetch it once
+        // (while still "unknown") rather than spawning `umbra rosetta status`
+        // every 2s poll tick, and skip it entirely while the daemon is down —
+        // best-effort: failure leaves "unknown" so it retries next tick.
+        if rosettaStatus == "unknown", status?.daemon != "down" {
+            if let rosettaResult = try? await cli.rosetta() {
+                rosettaStatus = rosettaResult
+            }
         }
+        daemonInstalled = status?.daemon == "up"
         onboardingNeeded = cliMissing || status?.daemon == "down"
     }
 
