@@ -21,6 +21,7 @@ import (
 	"github.com/ForceAI-KW/umbra/internal/netstack"
 	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
+	"github.com/ForceAI-KW/umbra/internal/singleton"
 	"github.com/ForceAI-KW/umbra/internal/sshkey"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
@@ -61,6 +62,15 @@ func run(logger *slog.Logger) error {
 	if err := paths.EnsureTree(); err != nil {
 		return err
 	}
+	// Single-instance guard: a second umbrad (e.g. `make run-daemon` against a
+	// running LaunchAgent copy) must fail fast, not race the socket bind or,
+	// worse, drive the same VM disks concurrently.
+	lock, err := singleton.Acquire(paths.LockFile())
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
 	reg := registry.New(paths.Machines())
 
 	st, err := netstack.New()
