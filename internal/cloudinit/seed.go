@@ -183,7 +183,12 @@ func dockerRuncmdLines() []string {
 		"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)",
 		"usermod -aG docker umbra",
 		"systemctl daemon-reload",
-		"systemctl enable --now docker",
+		// restart, not `enable --now`: get.docker.com already starts dockerd,
+		// so `enable --now` no-ops on the running unit and our tcp:2375
+		// ExecStart override never takes effect. restart forces the override
+		// (the likely cause of intermittent /_ping readiness timeouts).
+		"systemctl enable docker",
+		"systemctl restart docker",
 		// Persist the rule across reboots (iptables-persistent installs the
 		// netfilter-persistent save hook). DEBIAN_FRONTEND avoids the
 		// interactive "save current rules?" debconf prompt hanging boot.

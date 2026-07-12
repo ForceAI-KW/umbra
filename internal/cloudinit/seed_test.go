@@ -89,7 +89,7 @@ func TestBuildDockerSeed(t *testing.T) {
 		"get.docker.com",
 		"tcp://0.0.0.0:2375",
 		"--dport 2375 ! -s 192.168.127.1 -j DROP",
-		"enable --now docker",
+		"systemctl restart docker",
 		"ssh-ed25519 AAAATEST umbra", // ssh key still present
 	} {
 		if !strings.Contains(ud, want) {

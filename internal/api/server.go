@@ -249,6 +249,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("DELETE /v1/machines/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker uninstall'", name))
+			return
+		}
 		if _, err := s.reg.Load(name); err != nil {
 			writeErr(w, 404, err)
 			return
