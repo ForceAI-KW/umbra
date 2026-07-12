@@ -3,6 +3,7 @@
 package launchagent
 
 import (
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,7 +71,16 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 // ProgramArguments at binPath (absolute, no shell wrapper — see research §1
 // on codesign/entitlement survival) and logs at logDir.
 func RenderPlist(binPath, logDir string) []byte {
-	return []byte(fmt.Sprintf(plistTemplate, Label, binPath, logDir))
+	// XML-escape the substituted paths so a home dir containing & / < can't
+	// produce an invalid plist (bootstrap would fail loudly, but escaping is
+	// correct). Paths are exec'd directly by launchd, not via a shell.
+	return []byte(fmt.Sprintf(plistTemplate, Label, xmlEscape(binPath), xmlEscape(logDir)))
+}
+
+func xmlEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
 
 // guiTarget returns the launchctl gui/<uid> domain target for the current user.

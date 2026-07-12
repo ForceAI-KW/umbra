@@ -2,6 +2,7 @@
 package singleton
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -23,7 +24,7 @@ func Acquire(path string) (*Lock, error) {
 	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err != nil {
 		f.Close()
-		if err == syscall.EWOULDBLOCK {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("another umbrad is already running (lock held on %s) — check `pgrep umbrad`", path)
 		}
 		return nil, fmt.Errorf("failed to acquire lock: %w", err)
