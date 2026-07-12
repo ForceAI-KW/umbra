@@ -64,7 +64,8 @@ func daemonDotColor(daemon: String?, cliMissing: Bool) -> Color {
 }
 
 /// A small colored capsule showing a status dot + label — the standard way to
-/// render machine/daemon state across the app.
+/// render machine/daemon state across the app. Holds its intrinsic width so it
+/// never wraps its label inside a narrow sidebar column.
 struct StatusPill: View {
     let color: Color
     let text: String
@@ -74,10 +75,41 @@ struct StatusPill: View {
             Text(text)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(color)
+                .lineLimit(1)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(color.opacity(0.14), in: Capsule())
+        .background(color.opacity(0.16), in: Capsule())
+        .overlay(Capsule().strokeBorder(color.opacity(0.28), lineWidth: 0.5))
+        .fixedSize()
+    }
+}
+
+/// A raised surface: subtle fill + hairline border + rounded corners. The
+/// standard container for stat tiles and grouped content, giving the dark UI
+/// depth without heavy shadows.
+struct UmbraCard<Content: View>: View {
+    var padding: CGFloat = 14
+    @ViewBuilder var content: Content
+    var body: some View {
+        content
+            .padding(padding)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+            )
+    }
+}
+
+/// An uppercase section label for grouping (e.g. "MACHINES").
+struct SectionLabel: View {
+    let text: String
+    var body: some View {
+        Text(text.uppercased())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .tracking(0.6)
     }
 }
 

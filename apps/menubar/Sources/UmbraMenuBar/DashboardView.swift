@@ -2,12 +2,11 @@ import SwiftUI
 import AppKit
 
 // Main dashboard window: a NavigationSplitView (machine list sidebar +
-// machine detail) once the daemon is reachable, or a placeholder while
-// first-run onboarding is needed. Shares `StatusModel` with the
-// MenuBarExtra popover via `.environmentObject` (docs/research/
-// full-app-and-dmg.md §1). Status presentation (dot color / label / symbol)
-// comes from `StatusStyle`/`daemonDotColor` in Theme.swift — the single
-// source of truth shared with MenuBarView/MachineDetailView.
+// machine detail) once the daemon is reachable, or the onboarding flow while
+// first-run setup is needed. Shares `StatusModel` with the MenuBarExtra popover
+// via `.environmentObject`. Status presentation (dot color / label / symbol)
+// comes from `StatusStyle`/`daemonDotColor` in Theme.swift — the single source
+// of truth shared with MenuBarView/MachineDetailView.
 
 struct DashboardView: View {
     @EnvironmentObject var model: StatusModel
@@ -22,73 +21,232 @@ struct DashboardView: View {
                 splitView
             }
         }
-        .frame(minWidth: 700, minHeight: 460)
+        .frame(minWidth: 760, minHeight: 500)
         .onAppear { model.surfaceAppeared() }
         .onDisappear { model.surfaceDisappeared() }
+        // Auto-select the first machine so a populated dashboard opens on
+        // detail rather than the empty state, and keep the selection valid
+        // when the selected machine is deleted out from under us.
+        .onChange(of: machines.map(\.name)) { names in
+            if let sel = selected, !names.contains(sel) { selected = nil }
+            if selected == nil { selected = names.first }
+        }
         .sheet(isPresented: $showNewMachine) {
             NewMachineSheet()
                 .environmentObject(model)
         }
     }
 
+    private var machines: [Machine] { model.status?.machines ?? [] }
+
     private var splitView: some View {
         NavigationSplitView {
             sidebar
-                .toolbar {
-                    ToolbarItem {
-                        Button {
-                            showNewMachine = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .help("New Machine")
-                    }
-                }
+                .navigationSplitViewColumnWidth(min: 236, ideal: 248, max: 320)
         } detail: {
-            if let machine = selectedMachine {
-                MachineDetailView(machine: machine)
-            } else {
-                detailPlaceholder
+            Group {
+                if let machine = selectedMachine {
+                    MachineDetailView(machine: machine)
+                } else {
+                    detailPlaceholder
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showNewMachine = true
+                    } label: {
+                        Label("New Machine", systemImage: "plus")
+                    }
+                    .help("Create a new Linux machine")
+                }
             }
         }
     }
 
     private var selectedMachine: Machine? {
-        model.status?.machines?.first { $0.name == selected }
+        machines.first { $0.name == selected }
     }
+
+    // MARK: - Sidebar
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-
-            List(selection: $selected) {
-                ForEach(model.status?.machines ?? []) { machine in
-                    machineRow(machine).tag(machine.name)
-                }
-            }
-            .listStyle(.sidebar)
-
-            Spacer(minLength: 0)
-            Divider()
+            Divider().opacity(0.5)
+            machineList
+            Divider().opacity(0.5)
             footer
         }
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            UmbraMark(size: 22)
-            VStack(alignment: .leading, spacing: 1) {
+        HStack(spacing: 10) {
+            UmbraMark(size: 26)
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Umbra")
                     .font(.headline)
-                Text(daemonStateText)
-                    .font(.caption2)
-                    .foregroundStyle(daemonDotColor(daemon: model.status?.daemon, cliMissing: model.cliMissing))
+                StatusPill(color: daemonColor, text: daemonStateText)
             }
-            Spacer()
+            Spacer(minLength: 0)
             settingsButton
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+    }
+
+    private var machineList: some View {
+        Group {
+            if machines.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    SectionLabel(text: "Machines")
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 6) {
+                            Image(systemName: "tray")
+                                .font(.title2)
+                                .foregroundStyle(.tertiary)
+                            Text("No machines yet")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            } else {
+                List(selection: $selected) {
+                    Section {
+                        ForEach(machines) { machine in
+                            machineRow(machine).tag(machine.name)
+                        }
+                    } header: {
+                        SectionLabel(text: "Machines")
+                    }
+                }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func machineRow(_ machine: Machine) -> some View {
+        let s = StatusStyle(machine)
+        return HStack(spacing: 10) {
+            Image(systemName: s.symbol)
+                .font(.body)
+                .foregroundStyle(s.color)
+                .frame(width: 18)
+            Text(machine.name)
+                .font(.body)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            StatusPill(color: s.color, text: s.label)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 8) {
+            footerRow(icon: "shippingbox.fill", label: "Docker") {
+                StatusPill(color: dockerColor, text: dockerStatusText)
+                if model.status?.docker?.installed == true {
+                    Button {
+                        Task { await model.toggleDocker() }
+                    } label: {
+                        if model.busy.contains("docker") {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: model.status?.docker?.running == true ? "stop.fill" : "play.fill")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            footerRow(icon: "cpu", label: "Rosetta") {
+                Text(rosettaStatusText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(14)
+    }
+
+    private func footerRow<Trailing: View>(icon: String, label: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(label)
+                .font(.callout)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            trailing()
+        }
+    }
+
+    // MARK: - Detail placeholder (empty state)
+
+    private var detailPlaceholder: some View {
+        VStack(spacing: 18) {
+            UmbraMark(size: 72)
+            VStack(spacing: 6) {
+                Text("No machine selected")
+                    .font(.title2.weight(.semibold))
+                Text(machines.isEmpty
+                     ? "Create your first Linux machine to get started."
+                     : "Pick a machine on the left to see its details.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button {
+                showNewMachine = true
+            } label: {
+                Label("New Machine", systemImage: "plus")
+                    .padding(.horizontal, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Settings button (macOS 13 fallback for SettingsLink)
+
+    @ViewBuilder
+    private var settingsButton: some View {
+        if #available(macOS 14.0, *) {
+            SettingsLink {
+                Image(systemName: "gearshape")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+        } else {
+            Button {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    // MARK: - Derived state
+
+    private var daemonColor: Color {
+        daemonDotColor(daemon: model.status?.daemon, cliMissing: model.cliMissing)
     }
 
     private var daemonStateText: String {
@@ -98,76 +256,6 @@ struct DashboardView: View {
         case "down": return "daemon down"
         default: return "daemon —"
         }
-    }
-
-    // `SettingsLink` is macOS 14+ only; the package's deployment target is
-    // macOS 13 (README/Makefile documented requirement, matches
-    // Virtualization.framework's floor) so fall back to the same
-    // `showSettingsWindow:` action SwiftUI itself wires the app menu's
-    // "Preferences…" item to, on 13.
-    @ViewBuilder
-    private var settingsButton: some View {
-        if #available(macOS 14.0, *) {
-            SettingsLink {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.borderless)
-        } else {
-            Button {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.borderless)
-        }
-    }
-
-    private func machineRow(_ machine: Machine) -> some View {
-        let s = StatusStyle(machine)
-        return HStack {
-            Image(systemName: s.symbol)
-                .font(.body)
-                .foregroundStyle(s.color)
-            Text(machine.name)
-                .font(.body)
-            Spacer()
-            StatusPill(color: s.color, text: s.label)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: "shippingbox.fill")
-                    .foregroundStyle(.secondary)
-                Text("Docker")
-                Spacer()
-                StatusPill(color: dockerColor, text: dockerStatusText)
-                if model.status?.docker?.installed == true {
-                    Button {
-                        Task { await model.toggleDocker() }
-                    } label: {
-                        if model.busy.contains("docker") {
-                            ProgressView().scaleEffect(0.5)
-                        } else {
-                            Image(systemName: model.status?.docker?.running == true ? "stop.fill" : "play.fill")
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-            HStack {
-                Image(systemName: "cpu")
-                    .foregroundStyle(.secondary)
-                Text("Rosetta")
-                Spacer()
-                Text(rosettaStatusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(12)
     }
 
     private var dockerColor: Color {
@@ -183,17 +271,6 @@ struct DashboardView: View {
 
     private var rosettaStatusText: String {
         rosettaLabel(model.rosettaStatus)
-    }
-
-    private var detailPlaceholder: some View {
-        VStack(spacing: 10) {
-            UmbraMark(size: 44)
-            Text("No machine selected")
-                .font(.title3)
-            Text("Pick a machine on the left, or create one with +")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
