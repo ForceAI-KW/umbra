@@ -17,12 +17,36 @@ import (
 	"github.com/ForceAI-KW/umbra/internal/api"
 	"github.com/ForceAI-KW/umbra/internal/cloudinit"
 	"github.com/ForceAI-KW/umbra/internal/image"
+	"github.com/ForceAI-KW/umbra/internal/ipalloc"
+	"github.com/ForceAI-KW/umbra/internal/netstack"
 	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 	"github.com/ForceAI-KW/umbra/internal/sshkey"
 	"github.com/ForceAI-KW/umbra/internal/vm"
-	"github.com/ForceAI-KW/umbra/internal/vmnet"
 )
+
+// forwarderAdapter adapts *netstack.Stack's []netstack.ForwardView return
+// type to api.Forwarder's []api.ForwardView, so internal/api never needs to
+// import internal/netstack.
+type forwarderAdapter struct{ st *netstack.Stack }
+
+func (a forwarderAdapter) Expose(protocol, local, remote string) error {
+	return a.st.Expose(protocol, local, remote)
+}
+func (a forwarderAdapter) Unexpose(protocol, local string) error {
+	return a.st.Unexpose(protocol, local)
+}
+func (a forwarderAdapter) Forwards() ([]api.ForwardView, error) {
+	fs, err := a.st.Forwards()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.ForwardView, len(fs))
+	for i, f := range fs {
+		out[i] = api.ForwardView{Local: f.Local, Remote: f.Remote, Protocol: f.Protocol}
+	}
+	return out, nil
+}
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -37,12 +61,39 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	reg := registry.New(paths.Machines())
-	// TODO(T8): construct the shared netstack.Stack + netstack.Resolver here
-	// (install /etc/resolver, wire DialContextTCP readiness) and pass both
-	// instead of nil.
-	mgr := vm.NewManager(reg, paths.Machines(), nil, nil)
+
+	st, err := netstack.New()
+	if err != nil {
+		return err
+	}
+	res, err := netstack.NewResolver()
+	if err != nil {
+		return err
+	}
+	if err := netstack.InstallResolverFile(res.Port()); err != nil {
+		if errors.Is(err, netstack.ErrResolverPermission) {
+			logger.Warn("cannot write /etc/resolver/umbra.local — host-side *.umbra.local lookups won't work (guest /etc/hosts and umbra shell/forward still do); fix with: sudo sh -c 'printf \"nameserver 127.0.0.1\\nport %d\\n\" > /etc/resolver/umbra.local'", "port", res.Port(), "err", err)
+		} else {
+			logger.Warn("failed to install /etc/resolver/umbra.local, continuing without host-side DNS", "err", err)
+		}
+	}
+
+	mgr := vm.NewManager(reg, paths.Machines(), st, res)
 
 	provision := func(ctx context.Context, m *registry.Machine) error {
+		used, err := reg.UsedIPs()
+		if err != nil {
+			return err
+		}
+		ip, err := ipalloc.Allocate(netstack.Subnet, netstack.Gateway, netstack.FirstHost, used)
+		if err != nil {
+			return err
+		}
+		m.IP = ip
+		if err := reg.Save(m); err != nil { // persist before build so a later BuildSeed/reg.List sees it
+			return err
+		}
+
 		rawBase, err := image.Ensure(ctx, paths.Images(), m.Image)
 		if err != nil {
 			return err
@@ -55,17 +106,23 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		// TODO(T8): allocate m.IP via ipalloc and build the real hosts map
-		// before calling BuildSeed.
-		_, err = cloudinit.BuildSeed(m, mdir, pub, nil)
+		machines, err := reg.List()
+		if err != nil {
+			return err
+		}
+		hosts := make(map[string]string, len(machines))
+		for _, mc := range machines {
+			hosts[mc.Name] = mc.IP
+		}
+		_, err = cloudinit.BuildSeed(m, mdir, pub, hosts)
 		return err
 	}
 
 	ready := func(ctx context.Context, m *registry.Machine) (string, error) {
 		ip, err := vm.WaitReady(ctx,
-			func() (string, bool, error) { return vmnet.LookupIPFromFile(m.MAC) },
+			func() (string, bool, error) { return m.IP, true, nil }, // IP is known at create time (static addressing); no lease wait
 			func(addr string) error {
-				c, err := net.DialTimeout("tcp", addr, 2*time.Second)
+				c, err := st.DialContextTCP(ctx, addr)
 				if err == nil {
 					c.Close()
 				}
@@ -79,7 +136,7 @@ func run(logger *slog.Logger) error {
 		return ip, nil
 	}
 
-	srv := api.NewServer(reg, mgr, provision, ready)
+	srv := api.NewServer(reg, mgr, provision, ready, forwarderAdapter{st: st})
 
 	sock := paths.APISocket()
 	_ = os.Remove(sock) // stale socket from a previous run
@@ -147,6 +204,12 @@ func run(logger *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
 	mgr.StopAll(shutdownCtx) // graceful → hard per VM (P8)
+	if err := res.Shutdown(); err != nil {
+		logger.Warn("dns resolver shutdown", "err", err)
+	}
+	if err := netstack.UninstallResolverFile(); err != nil {
+		logger.Warn("uninstall /etc/resolver/umbra.local", "err", err)
+	}
 	_ = httpSrv.Shutdown(shutdownCtx)
 	return nil
 }
