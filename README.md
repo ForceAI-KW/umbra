@@ -89,6 +89,20 @@ Not yet implemented (deferred): per-container `<name>.umbra.local` DNS and
 auto-forwarding of published container ports (design-spec "docker-event-driven"
 feature) — M3 delivers the VM + socket + context foundation.
 
+## Rosetta / amd64 (M6)
+
+`docker run --platform linux/amd64 ...` works unchanged on the docker VM (and
+on `ci-runner` machines) because Umbra mounts a Rosetta VirtioFS share
+(`vz-rosetta`) into the guest and registers the F-flagged x86-64 `binfmt_misc`
+handler — no extra docker/containerd config needed. Rosetta is auto-installed
+(if missing) the first time such a machine boots; ordinary machines don't get
+the share (role-gated).
+
+```sh
+umbra rosetta status     # installed / not installed / not supported
+docker run --rm --platform linux/amd64 alpine uname -m   # -> x86_64
+```
+
 ## Menu bar app (M5)
 
 A menu-bar-only SwiftUI app (`Umbra.app`) — a thin client that shells out to the

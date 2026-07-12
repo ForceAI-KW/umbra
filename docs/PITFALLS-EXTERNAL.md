@@ -39,6 +39,7 @@ The two highest-relevance findings for Umbra's architecture: **P1** (cgo Handle 
 - **File:** `daemon/net/dns.go`
 
 ## P5 — Rosetta breaks after macOS point updates (SIGSEGV / "not installed")
+> **Addressed (M6):** live `VZLinuxRosettaDirectoryShare.availability` check + non-fatal `installRosetta()` on first role-gated boot (`internal/vm/rosetta_darwin.go`'s `RosettaAvailability()`/`attachRosetta()`, called from `needsRosetta()` in `internal/vm/config_darwin.go`); a boot-time host-build-drift log (`checkHostBuildDrift`, `internal/vm/config_darwin.go`) flags when `sw_vers -buildVersion` has changed since the machine's `HostBuild` was cached, since availability is a live read on every boot rather than cached, staleness only affects the log signal, not correctness; guest-side binfmt registration is F-flagged (`rosettaRuncmdLines` in `internal/cloudinit/seed.go`) so the handler resolves from inside a container's mount namespace. Exposed via `umbra rosetta status` (`cmd/umbra/rosetta.go`, `GET /v1/rosetta`).
 - **What:** amd64 binaries in guests crash or won't launch after a host macOS update, or Rosetta silently absent at first install.
 - **Where:** https://github.com/apple/container/issues/1142 (also colima#926, colima#1069, lima#3592) — 4 reports
 - **Why:** `VZLinuxRosettaDirectoryShare` binds to a host-build-specific Rosetta runtime; host updates invalidate the cached share.
