@@ -5,8 +5,9 @@ VERSION := $(shell cat VERSION)
 APP := $(BIN)/Umbra.app
 MENUBAR := apps/menubar
 RELEASE_TARBALL := $(BIN)/umbra-$(VERSION)-macos-arm64.tar.gz
+DMG := $(BIN)/Umbra-$(VERSION).dmg
 
-.PHONY: build test test-integration lint clean run-daemon app app-test release install uninstall
+.PHONY: build test test-integration lint clean run-daemon app app-test dmg release install uninstall
 
 build:
 	mkdir -p $(BIN)
@@ -39,6 +40,32 @@ app: build
 app-test:
 	swift test --package-path $(MENUBAR)
 
+# dmg wraps the signed Umbra.app in a drag-to-Applications disk image. Prefers
+# create-dmg (brew install create-dmg) for the nicer laid-out window; falls back
+# to a plain hdiutil UDZO image (app + Applications symlink) so a build box
+# without create-dmg never hard-fails. The .app is already correctly signed by
+# `make app` (umbrad keeps its virtualization entitlement) — we do NOT re-sign
+# here, so nothing can strip it. See docs/research/full-app-and-dmg.md §4.
+dmg: app
+	rm -f $(DMG)
+	@if command -v create-dmg >/dev/null 2>&1; then \
+		create-dmg \
+			--volname "Umbra" \
+			--window-size 540 380 \
+			--icon-size 128 \
+			--icon "Umbra.app" 140 190 \
+			--app-drop-link 400 190 \
+			"$(DMG)" "$(APP)" ; \
+	else \
+		echo "create-dmg not found (brew install create-dmg) — falling back to plain hdiutil" ; \
+		stage=$$(mktemp -d) ; \
+		cp -R "$(APP)" "$$stage/Umbra.app" ; \
+		ln -s /Applications "$$stage/Applications" ; \
+		hdiutil create -volname "Umbra" -srcfolder "$$stage" -ov -format UDZO "$(DMG)" ; \
+		rm -rf "$$stage" ; \
+	fi
+	@echo "dmg: $(DMG)"
+
 # install builds everything, then runs scripts/install.sh to put umbra/umbrad
 # on PATH, Umbra.app in /Applications, and load the LaunchAgent. Override the
 # locations with UMBRA_BIN_DIR / UMBRA_APP_DIR.
@@ -64,6 +91,7 @@ release: build app
 	printf 'ONE-SHOT INSTALL (recommended):\n     ./install.sh\n\n' >> $(BIN)/release-stage/INSTALL.txt
 	printf 'This puts umbra + umbrad on your PATH, Umbra.app in /Applications,\nand loads the umbrad LaunchAgent (auto-start at login). Uninstall: ./uninstall.sh\n\n' >> $(BIN)/release-stage/INSTALL.txt
 	printf 'MANUAL (if you prefer):\n  1. sudo cp umbra umbrad /usr/local/bin/\n  2. umbra daemon install\n  3. open Umbra.app\n\n' >> $(BIN)/release-stage/INSTALL.txt
+	printf 'Gatekeeper (first launch of Umbra.app): the app is ad-hoc signed, not\nnotarized. macOS refuses the first launch; on Sequoia (15+) right-click Open\nno longer bypasses it. Instead open Umbra (it is blocked), then System Settings\n> Privacy & Security > scroll down > Open Anyway. Or clear the flag directly:\n  xattr -dr com.apple.quarantine /Applications/Umbra.app\n\n' >> $(BIN)/release-stage/INSTALL.txt
 	printf 'First-run note: umbrad ships ad-hoc codesigned with the\ncom.apple.security.virtualization entitlement; macOS shows an interactive,\none-time permission prompt the first time it boots a VM -- approve it to\nallow Virtualization.framework access.\n\n' >> $(BIN)/release-stage/INSTALL.txt
 	printf 'Docs: https://github.com/ForceAI-KW/umbra\nTroubleshooting: docs/PITFALLS-EXTERNAL.md, docs/runbooks/\n' >> $(BIN)/release-stage/INSTALL.txt
 	tar -czf $(RELEASE_TARBALL) -C $(BIN)/release-stage umbrad umbra Umbra.app LICENSE INSTALL.txt install.sh uninstall.sh

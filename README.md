@@ -174,15 +174,44 @@ in the build step. See
 
 ## Install
 
+### Install (.dmg) — the app
+
+```sh
+make dmg        # bin/Umbra-<version>.dmg (a drag-to-Applications disk image)
+```
+
+1. Open `Umbra-<version>.dmg`.
+2. Drag **Umbra** onto the **Applications** shortcut in the window.
+3. Launch Umbra from Applications. On first run it walks you through an
+   **Install** step (copies `umbra`/`umbrad` onto your `PATH`, re-signs
+   `umbrad` with its virtualization entitlement, and loads the launchd
+   daemon) — the same thing `scripts/install.sh` does, just in the UI.
+
+**First-launch Gatekeeper note.** Umbra is ad-hoc signed, not
+notarized/Developer-ID (see
+[CONTRIBUTING.md](CONTRIBUTING.md#security-posture)), so a `.dmg` downloaded
+via a browser is quarantined and macOS will refuse the first launch. Since
+macOS Sequoia (15) right-click → Open no longer bypasses this — instead:
+
+- Try to open Umbra (it will be blocked), then go to **System Settings →
+  Privacy & Security**, scroll down, and click **Open Anyway**; or
+- clear the quarantine flag directly:
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/Umbra.app
+  ```
+
+**First VM boot.** The first time `umbrad` boots a VM, macOS shows a one-time
+Virtualization permission prompt — approve it.
+
+### Install (CLI tarball) — headless / servers
+
 ```sh
 make release   # bin/umbra-<version>-macos-arm64.tar.gz: umbrad, umbra,
                # Umbra.app, LICENSE, INSTALL.txt
 ```
 
-Untar it and follow `INSTALL.txt` (copy the binaries onto your `PATH`,
-`umbra daemon install`, `open Umbra.app`). There's no notarized/Developer-ID
-build — see [CONTRIBUTING.md](CONTRIBUTING.md#security-posture) — so expect a
-Gatekeeper prompt on first run.
+Untar it and run `./install.sh` (or follow `INSTALL.txt` manually: copy the
+binaries onto your `PATH`, `umbra daemon install`, `open Umbra.app`).
 
 ## Design notes
 
