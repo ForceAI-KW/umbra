@@ -24,9 +24,10 @@ type Client struct {
 
 type MachineView struct {
 	registry.Machine
-	State  vm.State `json:"state"`
-	IP     string   `json:"ip,omitempty"`
-	Zombie bool     `json:"zombie,omitempty"`
+	State   vm.State `json:"state"`
+	IP      string   `json:"ip,omitempty"`
+	SSHPort int      `json:"ssh_port,omitempty"`
+	Zombie  bool     `json:"zombie,omitempty"`
 }
 
 type CreateRequest struct {

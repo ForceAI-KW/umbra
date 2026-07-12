@@ -63,8 +63,12 @@ func TestBuildSeedProducesCidataISO(t *testing.T) {
 			t.Fatalf("seed missing %q", want)
 		}
 	}
-	if !strings.Contains(ud, "192.168.127.11") || !strings.Contains(ud, "other.umbra.local other") {
-		t.Fatalf("user-data missing hosts entry for %q:\n%s", "other", ud)
+	// hosts entries are appended to /etc/hosts via a printf runcmd (dash's
+	// echo can't do -e); assert the printf line carries the IP + FQDN.
+	for _, want := range []string{"192.168.127.11", ".umbra.local", "'other'", ">> /etc/hosts", "printf"} {
+		if !strings.Contains(ud, want) {
+			t.Fatalf("user-data missing hosts runcmd fragment %q:\n%s", want, ud)
+		}
 	}
 	if strings.Contains(ud, "skipped.umbra.local") {
 		t.Fatalf("user-data included hosts entry with empty IP:\n%s", ud)

@@ -57,9 +57,10 @@ func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready fun
 
 type MachineView struct {
 	registry.Machine
-	State  vm.State `json:"state"`
-	IP     string   `json:"ip,omitempty"`
-	Zombie bool     `json:"zombie,omitempty"`
+	State   vm.State `json:"state"`
+	IP      string   `json:"ip,omitempty"`
+	SSHPort int      `json:"ssh_port,omitempty"`
+	Zombie  bool     `json:"zombie,omitempty"`
 }
 
 type CreateRequest struct {
@@ -111,7 +112,7 @@ func hostBuild() string {
 
 func (s *Server) view(m *registry.Machine) MachineView {
 	info := s.lc.Info(m.Name)
-	return MachineView{Machine: *m, State: info.State, IP: info.IP, Zombie: info.Zombie}
+	return MachineView{Machine: *m, State: info.State, IP: info.IP, SSHPort: info.SSHPort, Zombie: info.Zombie}
 }
 
 func (s *Server) Handler() http.Handler {

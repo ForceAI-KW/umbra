@@ -126,7 +126,9 @@ func hostsRuncmd(hosts map[string]string) string {
 	var b strings.Builder
 	b.WriteString("runcmd:\n")
 	for _, name := range names {
-		fmt.Fprintf(&b, "  - echo -e \"%s\\t%s.umbra.local %s\" >> /etc/hosts\n", hosts[name], name, name)
+		// printf, not `echo -e`: cloud-init runs runcmd via dash, whose echo
+		// prints "-e" literally and doesn't expand \t (verified in-guest).
+		fmt.Fprintf(&b, "  - printf '%%s\\t%%s.umbra.local %%s\\n' '%s' '%s' '%s' >> /etc/hosts\n", hosts[name], name, name)
 	}
 	return b.String()
 }

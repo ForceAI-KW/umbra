@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	gonet "net"
 	"sync"
 	"time"
 
@@ -38,10 +39,11 @@ const (
 )
 
 type Info struct {
-	Name   string `json:"name"`
-	State  State  `json:"state"`
-	IP     string `json:"ip,omitempty"`
-	Zombie bool   `json:"zombie,omitempty"`
+	Name    string `json:"name"`
+	State   State  `json:"state"`
+	IP      string `json:"ip,omitempty"`
+	SSHPort int    `json:"ssh_port,omitempty"` // loopback port forwarded to guest:22
+	Zombie  bool   `json:"zombie,omitempty"`
 }
 
 type instance struct {
@@ -53,10 +55,11 @@ type instance struct {
 	// released during the (multi-second) launch/stop calls so Info/List
 	// remain responsive — e.g. observing StateStarting — while a lifecycle
 	// operation is in flight.
-	mu     sync.Mutex
-	state  State
-	ip     string
-	handle vzHandle
+	mu      sync.Mutex
+	state   State
+	ip      string
+	sshPort int // loopback port forwarded to guest:22 while running
+	handle  vzHandle
 	// stopFn tears down this VM's netstack attachment (cancels the
 	// AcceptVfkit goroutine, closes the gvisor-tap-vsock socket end) once the
 	// stop is confirmed.
@@ -165,7 +168,37 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 		// registers an empty IP, which Resolver.Set ignores (non-IPv4 guard).
 		m.dns.Set(name, cfg.IP)
 	}
+	// Auto-expose an SSH forward so the host (which can't route into the
+	// userspace netstack) can reach the guest via 127.0.0.1:<sshPort>.
+	if m.net != nil && cfg.IP != "" {
+		i.sshPort = exposeSSH(m.net, cfg.IP)
+	}
 	return nil
+}
+
+// exposeSSH picks a free loopback port and forwards it to guestIP:22.
+// Returns 0 on failure (shell falls back to reporting no port).
+func exposeSSH(net netStack, guestIP string) int {
+	for attempt := 0; attempt < 3; attempt++ {
+		port, err := freePort()
+		if err != nil {
+			return 0
+		}
+		local := fmt.Sprintf("127.0.0.1:%d", port)
+		if err := net.Expose("tcp", local, guestIP+":22"); err == nil {
+			return port
+		}
+	}
+	return 0
+}
+
+func freePort() (int, error) {
+	l, err := gonet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*gonet.TCPAddr).Port, nil
 }
 
 // acquireOpMu acquires i.opMu without blocking indefinitely past ctx: it
@@ -226,8 +259,12 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	if stopFn != nil {
 		stopFn() // netstack attach cleanup: cancel AcceptVfkit, close socket
 	}
+	if m.net != nil && i.sshPort != 0 {
+		_ = m.net.Unexpose("tcp", fmt.Sprintf("127.0.0.1:%d", i.sshPort))
+	}
 	i.state = StateStopped
 	i.ip = ""
+	i.sshPort = 0
 	i.handle = nil
 	i.stopFn = nil
 	if m.dns != nil {
@@ -266,7 +303,7 @@ func (m *Manager) Info(name string) Info {
 	// (P9 zombie) — the VM may still be alive; callers (e.g. DELETE) must
 	// treat it like Running, not like a clean crash.
 	zombie := i.state == StateCrashed && i.handle != nil
-	return Info{Name: name, State: i.state, IP: i.ip, Zombie: zombie}
+	return Info{Name: name, State: i.state, IP: i.ip, SSHPort: i.sshPort, Zombie: zombie}
 }
 
 func (m *Manager) List() []Info {
