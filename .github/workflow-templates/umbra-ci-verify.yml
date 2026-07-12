@@ -1,0 +1,32 @@
+# TEMPLATE — lives under .github/workflow-templates/, NOT .github/workflows/,
+# so it never runs as part of umbra's own CI.
+#
+# Copy this file into a repo's .github/workflows/ during cutover verification
+# (docs/runbooks/ci-cutover.md, Step 3). It is triggered only by
+# workflow_dispatch and pinned to runs-on: [self-hosted, umbra-ci] — GitHub's
+# label matching is AND-semantics (a job lands only on a runner carrying
+# EVERY listed label), so this can only land on the new fwb-ci2 runners
+# (registered with the extra "umbra-ci" label), never on the existing
+# fwb-ci runners (which don't carry it). Safe to trigger repeatedly without
+# any risk of stealing a real CI job's runner.
+name: umbra-ci verify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: [self-hosted, umbra-ci]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: arch + docker smoke
+        run: |
+          uname -m
+          docker run --rm hello-world
+
+      - name: docker version
+        run: docker version
+
+      - name: toolchain smoke
+        run: git --version

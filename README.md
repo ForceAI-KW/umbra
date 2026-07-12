@@ -89,6 +89,43 @@ Not yet implemented (deferred): per-container `<name>.umbra.local` DNS and
 auto-forwarding of published container ports (design-spec "docker-event-driven"
 feature) — M3 delivers the VM + socket + context foundation.
 
+## launchd daemon + CI-runner cutover (M4)
+
+`umbrad` can auto-start at login as a macOS LaunchAgent instead of running
+interactively in a terminal:
+
+```sh
+umbra daemon install      # writes + loads the ~/Library/LaunchAgents plist, starts umbrad now
+umbra daemon status       # launchagent + API reachability
+umbra daemon uninstall    # stops + unloads it
+```
+
+A single-instance `flock` guard (`~/.umbra/run/umbrad.lock`) means a stray
+`make run-daemon` while the LaunchAgent copy is already up fails fast with a
+clear message instead of racing the API socket or a VM disk. After a rebuild
+(`make build`), re-run `umbra daemon install` to pick up the new signed
+binary — launchd does not auto-reload on file change (P23).
+
+A `ci-runner` role machine (`umbra create <name> --role ci-runner ...`) is a
+normal, GitHub-Actions-self-hosted-runner-flavored Umbra machine — provisioned
+with its own local-only dockerd (no shared docker VM, no network-exposed
+socket), used to run `ForceAI-KW`'s org-level self-hosted runners inside an
+Umbra guest instead of the existing OrbStack `fwb-ci` VM. The full cutover kit
+— runner install script, a `workflow_dispatch`-only verify workflow template,
+and the human-gated cutover procedure — lives at:
+
+- [scripts/install-runner.sh](scripts/install-runner.sh) — installs N GitHub
+  Actions runner instances inside a `ci-runner` guest
+- [.github/workflow-templates/umbra-ci-verify.yml](.github/workflow-templates/umbra-ci-verify.yml) —
+  copy into a target repo during verification only; labeled so it can only
+  land on the new runners, never on `fwb-ci`
+- [docs/runbooks/ci-cutover.md](docs/runbooks/ci-cutover.md) — the full
+  procedure: create + boot `fwb-ci2`, register runners, verify green
+  (including a sleep/wake check), then a clearly-marked **human-gate**
+  section (flip real workflows over → deregister `fwb-ci` → delete the
+  OrbStack VM → uninstall OrbStack) that is **Ahmad's hands only** —
+  never automated, never run unattended.
+
 ## Build
 
 Requirements: macOS 13+ on Apple Silicon (arm64), Xcode Command Line Tools, Go 1.25+.
