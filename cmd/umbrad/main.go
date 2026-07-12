@@ -52,7 +52,9 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		_, err = cloudinit.BuildSeed(m, mdir, pub)
+		// TODO(T8): allocate m.IP via ipalloc and build the real hosts map
+		// before calling BuildSeed.
+		_, err = cloudinit.BuildSeed(m, mdir, pub, nil)
 		return err
 	}
 

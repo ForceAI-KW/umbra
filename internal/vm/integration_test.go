@@ -35,7 +35,7 @@ func TestBootShellStopCycle(t *testing.T) {
 	machinesDir := filepath.Join(root, "machines")
 	reg := registry.New(machinesDir)
 	m := &registry.Machine{Name: "itest", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
-		Image: "ubuntu:noble", MAC: "a6:5e:00:aa:bb:01", CreatedAt: time.Now()}
+		Image: "ubuntu:noble", MAC: "a6:5e:00:aa:bb:01", IP: "192.168.127.50", CreatedAt: time.Now()}
 	if err := reg.Save(m); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestBootShellStopCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cloudinit.BuildSeed(m, mdir, pub); err != nil {
+	if _, err := cloudinit.BuildSeed(m, mdir, pub, nil); err != nil {
 		t.Fatal(err)
 	}
 
