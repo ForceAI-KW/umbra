@@ -140,3 +140,50 @@ UTM's issue API 502/504'd during mining — not deep-mined. StackOverflow near-z
 
 ## P18 — per-container `<container>.umbra.local` DNS + auto-published-port forwarding (DEFERRED)
 - The design spec's "docker-event-driven DNS + auto port forwarding" (watch the Docker events API, register `<container>.umbra.local`, auto-forward published ports) is a distinct larger feature layered on the M3 socket/context foundation. **Not implemented in M3** — deferred to a later milestone.
+
+## P19 — launchd's minimal PATH breaks `docker` CLI lookups from `umbrad`
+Concretely traced: `internal/dockerctx/dockerctx.go:27`'s `lookPath("docker")` (called from
+`DockerInstall`/`DockerStart` API handlers) fails under a bare launchd PATH
+(`/usr/bin:/bin:/usr/sbin:/sbin`) since Homebrew's `docker` CLI lives at `/opt/homebrew/bin/docker`.
+**Every other host-side `exec.Command`** in the codebase (`internal/api/server.go:130`,
+`cmd/umbrad/docker.go:71`) already uses an absolute path (`/usr/bin/sw_vers`) and is unaffected —
+this is the *only* PATH-dependent call site. **Mitigation**: `EnvironmentVariables.PATH` in the
+plist (§1), verified by re-running `umbra docker status` after `umbra daemon install`.
+
+## P20 — the registration token is a ticking clock across a multi-instance install
+GitHub's org registration token expires in 1 hour. A cloud-init-baked token (the pattern M3 uses
+for static docker provisioning) risks going stale before boot+provisioning completes, and installing
+N runner instances sequentially against one token risks the same on a slow guest. **Mitigation**:
+fetch a fresh token per `config.sh` invocation, live, over `umbra shell` — never bake it into the
+seed ISO (§4).
+
+## P21 — runner VM loses network on host sleep; the M2 supervisor is necessary but not sufficient
+`internal/netstack/supervisor.go`'s sleep/wake probe (per `main.go`'s wiring) detects a wake gap and
+probes SSH health, logging loudly — but it does not restart the GitHub Actions runner *service*
+inside the guest if the runner's own long-lived HTTPS connection to GitHub's Actions backend
+(separate from the SSH-based probe path) needs re-establishing after a host sleep. `svc.sh`'s
+systemd unit should already auto-reconnect (the runner binary itself retries), but this should be
+explicitly verified during §5's verification phase (put the host to sleep/wake mid-verification,
+confirm the runner still picks up a dispatched job afterward) rather than assumed.
+
+## P22 — CI cache/build-artifact disk growth silently fills the guest disk
+Docker image layers, npm/pnpm caches, and build artifacts accumulate on `fwb-ci2`'s guest disk over
+weeks of CI churn — this is P9 from `PITFALLS-EXTERNAL.md` ("zombie... disk fills") applied to a
+*healthy*-but-growing disk rather than a crashed one. **Mitigation**: size the guest disk with
+headroom over whatever `fwb-ci`'s OrbStack 26GB has proven sufficient for, and add a periodic
+`docker system prune -af --volumes` (cron or a runner post-job hook) — not solved by M1–M3's
+`growpart`-on-first-boot alone, since that only grows the filesystem to fill the *disk image*, it
+doesn't reclaim space once CI churn fills it.
+
+## P23 — codesign/entitlement survives launchd, but *rebuilds* silently break it if the LaunchAgent isn't reloaded
+Running `make build` while the old `bin/umbrad` is still the one loaded under launchd is fine (the
+running process keeps its own already-checked entitlement in memory) — but developers should know
+that `umbra daemon install`/`kickstart -k` after a rebuild is required to pick up the new signed
+binary; there's no launchd "auto-reload on file change" behavior. Document as a one-line note in
+the `umbra daemon` command help text, not a bug — just a discoverability gap.
+
+## P24 — TCC prompts have no UI to answer under a LaunchAgent (see §1)
+Restated as a pitfall for visibility: a first-run VirtioFS home-share TCC prompt cannot be answered
+by a LaunchAgent (no windowed session). If the interactive-first-run step in §1 is skipped, the
+guest's `/mnt/mac` mount could silently fail for TCC-protected subdirectories the *first* time
+`umbrad` ever runs as a LaunchAgent, with no visible dialog — only an `EPERM` buried in guest logs.

@@ -16,6 +16,12 @@ var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 const ReservedDockerName = "docker"
 
+// RoleCIRunner marks a machine as a GitHub Actions self-hosted CI runner.
+// Its cloud-init profile installs plain docker (no tcp://0.0.0.0:2375
+// exposure, no iptables 2375 rule) — see internal/cloudinit/seed.go's
+// ciRunnerRuncmdLines and docs/research/launchd-and-ci-cutover.md §4.
+const RoleCIRunner = "ci-runner"
+
 func ValidName(name string) bool { return nameRe.MatchString(name) }
 
 func IsReserved(name string) bool { return name == ReservedDockerName }

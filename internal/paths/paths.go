@@ -21,6 +21,7 @@ func Run() string                   { return filepath.Join(Root(), "run") }
 func Logs() string                  { return filepath.Join(Root(), "log") }
 func SSH() string                   { return filepath.Join(Root(), "ssh") }
 func APISocket() string             { return filepath.Join(Run(), "api.sock") }
+func LockFile() string              { return filepath.Join(Run(), "umbrad.lock") }
 
 func EnsureTree() error {
 	for _, d := range []string{Machines(), Images(), Run(), Logs(), SSH()} {

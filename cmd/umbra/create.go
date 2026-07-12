@@ -15,6 +15,7 @@ var (
 	flagDiskGiB   uint64
 	flagImage     string
 	flagAutostart bool
+	flagRole      string
 )
 
 var createCmd = &cobra.Command{
@@ -28,7 +29,7 @@ var createCmd = &cobra.Command{
 		fmt.Printf("creating %s (first run downloads the Ubuntu image, ~600MB)...\n", args[0])
 		mv, err := apiClient.CreateMachine(cmd.Context(), client.CreateRequest{
 			Name: args[0], CPUs: flagCPUs, MemoryMiB: flagMemoryGiB * 1024,
-			DiskGiB: flagDiskGiB, Image: flagImage, Autostart: flagAutostart,
+			DiskGiB: flagDiskGiB, Image: flagImage, Autostart: flagAutostart, Role: flagRole,
 		})
 		if err != nil {
 			return err
@@ -44,4 +45,5 @@ func init() {
 	createCmd.Flags().Uint64Var(&flagDiskGiB, "disk-gib", 60, "disk size (GiB)")
 	createCmd.Flags().StringVar(&flagImage, "image", "ubuntu:noble", "guest image")
 	createCmd.Flags().BoolVar(&flagAutostart, "autostart", false, "start with the daemon")
+	createCmd.Flags().StringVar(&flagRole, "role", "", "machine role (only \"ci-runner\" is accepted; leave empty for a normal machine)")
 }

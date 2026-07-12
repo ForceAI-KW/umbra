@@ -463,10 +463,12 @@ func TestCreateRejectsReservedDockerName(t *testing.T) {
 	}
 }
 
-// TestListMachinesExcludesReservedRole covers the visibility rule from
-// research §4: a machine with a non-empty Role (the docker VM) must not
-// appear in the normal machines list.
-func TestListMachinesExcludesReservedRole(t *testing.T) {
+// TestListMachinesExcludesOnlyReservedDockerRole covers the visibility rule
+// from research §4/§8 (Task 7 fix): only the reserved docker VM
+// (Role == registry.ReservedDockerName) is hidden from the normal machines
+// list. A ci-runner machine is a normal, user-visible machine and must
+// appear — it's not an implementation detail like the docker VM.
+func TestListMachinesExcludesOnlyReservedDockerRole(t *testing.T) {
 	reg := registry.New(t.TempDir())
 	lc := &fakeLC{states: map[string]vm.State{}}
 	s := NewServer(reg, lc,
@@ -476,11 +478,15 @@ func TestListMachinesExcludesReservedRole(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
-	// Seed a normal machine via the API, and the reserved docker machine
-	// directly in the registry (its own create path is POST /v1/docker/install,
-	// not POST /v1/machines — the API create handler rejects the name).
+	// Seed a normal machine and a ci-runner machine via the API, and the
+	// reserved docker machine directly in the registry (its own create path
+	// is POST /v1/docker/install, not POST /v1/machines — the API create
+	// handler rejects the name).
 	if resp := postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "dev"}); resp.StatusCode != 201 {
 		t.Fatalf("create dev: %d", resp.StatusCode)
+	}
+	if resp := postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "fwb-ci2", "role": "ci-runner"}); resp.StatusCode != 201 {
+		t.Fatalf("create fwb-ci2: %d", resp.StatusCode)
 	}
 	if err := reg.Save(&registry.Machine{Name: "docker", Role: "docker", CPUs: 2, MemoryMiB: 4096, DiskGiB: 40}); err != nil {
 		t.Fatal(err)
@@ -494,8 +500,50 @@ func TestListMachinesExcludesReservedRole(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].Name != "dev" {
-		t.Fatalf("list = %+v, want only [dev]", list)
+	names := map[string]bool{}
+	for _, m := range list {
+		names[m.Name] = true
+	}
+	if len(list) != 2 || !names["dev"] || !names["fwb-ci2"] {
+		t.Fatalf("list = %+v, want [dev, fwb-ci2] (docker VM hidden, ci-runner visible)", list)
+	}
+}
+
+// TestCreateWithCIRunnerRole covers Task 7: `--role ci-runner` must create
+// successfully (201) and the returned machine must carry the role.
+func TestCreateWithCIRunnerRole(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	resp := postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "fwb-ci2", "role": "ci-runner"})
+	if resp.StatusCode != 201 {
+		t.Fatalf("create with role ci-runner: %d, want 201", resp.StatusCode)
+	}
+	var mv MachineView
+	if err := json.NewDecoder(resp.Body).Decode(&mv); err != nil {
+		t.Fatal(err)
+	}
+	if mv.Role != "ci-runner" {
+		t.Fatalf("role = %q, want ci-runner", mv.Role)
+	}
+}
+
+// TestCreateRejectsDockerRole covers Task 7: the "docker" role is reserved
+// for the machine created via `umbra docker install` — a normal create
+// request must not be able to claim it, even if the name isn't "docker".
+func TestCreateRejectsDockerRole(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	resp := postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "sneaky", "role": "docker"})
+	if resp.StatusCode != 400 {
+		t.Fatalf("create with role docker: %d, want 400", resp.StatusCode)
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		t.Fatal(err)
+	}
+	want := "invalid role (only 'ci-runner' allowed)"
+	if e.Error != want {
+		t.Fatalf("error message = %q, want %q", e.Error, want)
 	}
 }
 

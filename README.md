@@ -14,7 +14,7 @@ via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
 | M1 | Core VM lifecycle: Ubuntu machines, shell, VirtioFS home share, verified stop | ✅ Done — warm boot to SSH-ready in ~7s |
 | M2 | Networking: gvisor-tap-vsock NAT (VPN-safe), `*.umbra.local` DNS, port forwarding | ✅ Done |
 | M3 | Docker: dedicated dockerd VM + `umbra` docker context | ✅ Done |
-| M4 | launchd autostart + CI-runner machine cutover | Not started |
+| M4 | launchd autostart + CI-runner cutover kit (cutover is human-gated) | ✅ Done (kit built; cutover is Ahmad's runbook) |
 | M5 | SwiftUI menu bar app | Not started |
 | M6 | Rosetta (amd64) + OSS release polish | Not started |
 
@@ -89,6 +89,43 @@ Not yet implemented (deferred): per-container `<name>.umbra.local` DNS and
 auto-forwarding of published container ports (design-spec "docker-event-driven"
 feature) — M3 delivers the VM + socket + context foundation.
 
+## launchd daemon + CI-runner cutover (M4)
+
+`umbrad` can auto-start at login as a macOS LaunchAgent instead of running
+interactively in a terminal:
+
+```sh
+umbra daemon install      # writes + loads the ~/Library/LaunchAgents plist, starts umbrad now
+umbra daemon status       # launchagent + API reachability
+umbra daemon uninstall    # stops + unloads it
+```
+
+A single-instance `flock` guard (`~/.umbra/run/umbrad.lock`) means a stray
+`make run-daemon` while the LaunchAgent copy is already up fails fast with a
+clear message instead of racing the API socket or a VM disk. After a rebuild
+(`make build`), re-run `umbra daemon install` to pick up the new signed
+binary — launchd does not auto-reload on file change (P23).
+
+A `ci-runner` role machine (`umbra create <name> --role ci-runner ...`) is a
+normal, GitHub-Actions-self-hosted-runner-flavored Umbra machine — provisioned
+with its own local-only dockerd (no shared docker VM, no network-exposed
+socket), used to run `ForceAI-KW`'s org-level self-hosted runners inside an
+Umbra guest instead of the existing OrbStack `fwb-ci` VM. The full cutover kit
+— runner install script, a `workflow_dispatch`-only verify workflow template,
+and the human-gated cutover procedure — lives at:
+
+- [scripts/install-runner.sh](scripts/install-runner.sh) — installs N GitHub
+  Actions runner instances inside a `ci-runner` guest
+- [.github/workflow-templates/umbra-ci-verify.yml](.github/workflow-templates/umbra-ci-verify.yml) —
+  copy into a target repo during verification only; labeled so it can only
+  land on the new runners, never on `fwb-ci`
+- [docs/runbooks/ci-cutover.md](docs/runbooks/ci-cutover.md) — the full
+  procedure: create + boot `fwb-ci2`, register runners, verify green
+  (including a sleep/wake check), then a clearly-marked **human-gate**
+  section (flip real workflows over → deregister `fwb-ci` → delete the
+  OrbStack VM → uninstall OrbStack) that is **Ahmad's hands only** —
+  never automated, never run unattended.
+
 ## Build
 
 Requirements: macOS 13+ on Apple Silicon (arm64), Xcode Command Line Tools, Go 1.25+.
@@ -107,7 +144,7 @@ in the build step. See
 
 ## Design notes
 
-Umbra's lifecycle code is engineered against 12 documented production
+Umbra's lifecycle code is engineered against 24 documented production
 failures of the macOS VM ecosystem (vz cgo panics, VirtioFS desync,
 gvproxy sleep/wake spins, Rosetta breakage, DHCP DUID traps, …) mined from
 Lima/Colima/apple-container/vfkit issue trackers before the first line of
@@ -125,7 +162,7 @@ code — see [docs/PITFALLS-EXTERNAL.md](docs/PITFALLS-EXTERNAL.md). Highlights:
 
 ## Docs
 
-- [docs/PITFALLS-EXTERNAL.md](docs/PITFALLS-EXTERNAL.md) — 12 verified production pitfalls (vz / gvisor-tap-vsock / VirtioFS / Rosetta)
+- [docs/PITFALLS-EXTERNAL.md](docs/PITFALLS-EXTERNAL.md) — 24 production pitfalls (vz / gvisor-tap-vsock / VirtioFS / Rosetta / docker / launchd+CI)
 - [docs/superpowers/specs/2026-07-11-umbra-design.md](docs/superpowers/specs/2026-07-11-umbra-design.md) — design spec
 - [docs/superpowers/plans/2026-07-11-m1-core-vm-lifecycle.md](docs/superpowers/plans/2026-07-11-m1-core-vm-lifecycle.md) — M1 implementation plan (spec-driven development, TDD)
 - [docs/runbooks/entitlements-and-codesigning.md](docs/runbooks/entitlements-and-codesigning.md) — entitlements & codesigning runbook

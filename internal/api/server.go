@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -94,6 +95,7 @@ type CreateRequest struct {
 	DiskGiB   uint64 `json:"disk_gib"`
 	Image     string `json:"image"`
 	Autostart bool   `json:"autostart"`
+	Role      string `json:"role,omitempty"`
 }
 
 func validPort(p int) error {
@@ -154,7 +156,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		out := make([]MachineView, 0, len(machines))
 		for _, m := range machines {
-			if m.Role != "" { // reserved machines (the docker VM) are hidden from the normal list
+			if m.Role == registry.ReservedDockerName { // only the reserved docker VM is hidden; ci-runner machines are normal, visible machines
 				continue
 			}
 			out = append(out, s.view(m))
@@ -176,6 +178,10 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 400, fmt.Errorf("%q is reserved — use 'umbra docker install'", req.Name))
 			return
 		}
+		if req.Role != "" && req.Role != registry.RoleCIRunner {
+			writeErr(w, 400, errors.New("invalid role (only 'ci-runner' allowed)"))
+			return
+		}
 		if _, err := s.reg.Load(req.Name); err == nil {
 			writeErr(w, 409, fmt.Errorf("machine %q already exists", req.Name))
 			return
@@ -193,7 +199,7 @@ func (s *Server) Handler() http.Handler {
 			req.Image = "ubuntu:noble"
 		}
 		m := &registry.Machine{Name: req.Name, CPUs: req.CPUs, MemoryMiB: req.MemoryMiB,
-			DiskGiB: req.DiskGiB, Image: req.Image, MAC: randomMAC(),
+			DiskGiB: req.DiskGiB, Image: req.Image, MAC: randomMAC(), Role: req.Role,
 			Autostart: req.Autostart, HostBuild: hostBuild(), CreatedAt: time.Now().UTC()}
 		if err := s.reg.Save(m); err != nil {
 			writeErr(w, 500, err)

@@ -37,6 +37,7 @@ type CreateRequest struct {
 	DiskGiB   uint64 `json:"disk_gib"`
 	Image     string `json:"image"`
 	Autostart bool   `json:"autostart"`
+	Role      string `json:"role,omitempty"`
 }
 
 // ForwardView mirrors api.ForwardView; kept as its own type here so the CLI
