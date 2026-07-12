@@ -94,6 +94,12 @@ struct MachineDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            if let actionError = model.actionError {
+                Text(actionError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
     }
 }

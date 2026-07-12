@@ -93,25 +93,6 @@ final class CLIClientTests: XCTestCase {
         XCTAssertFalse(script.contains("--entitlements '\(entitlements)' --sign - /usr/local/bin/umbra\""))
     }
 
-    // MARK: - resolverFileContent / installResolverShellCommand / installResolverScript
-
-    func testResolverFileContentIsNameserverAndPort() {
-        XCTAssertEqual(resolverFileContent(), "nameserver 192.168.127.1\nport 53\n")
-    }
-
-    func testInstallResolverShellCommandWritesToEtcResolver() {
-        let command = installResolverShellCommand()
-        XCTAssertTrue(command.contains("mkdir -p /etc/resolver"))
-        XCTAssertTrue(command.contains("tee /etc/resolver/umbra.local"))
-        XCTAssertTrue(command.contains("nameserver 192.168.127.1"))
-    }
-
-    func testInstallResolverScriptRequestsAdministratorPrivileges() {
-        let script = installResolverScript()
-        XCTAssertTrue(script.contains("with administrator privileges"))
-        XCTAssertTrue(script.contains("do shell script"))
-    }
-
     // MARK: - CLIError.errorDescription
 
     func testCLIErrorNonZeroExitUsesMessageWhenPresent() {

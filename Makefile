@@ -83,6 +83,7 @@ release: build app
 	mkdir -p $(BIN)/release-stage
 	cp $(BIN)/umbrad $(BIN)/umbra $(BIN)/release-stage/
 	cp -R $(APP) $(BIN)/release-stage/Umbra.app
+	cp build/vz.entitlements $(BIN)/release-stage/vz.entitlements
 	cp LICENSE $(BIN)/release-stage/
 	cp scripts/install.sh scripts/uninstall.sh $(BIN)/release-stage/
 	chmod +x $(BIN)/release-stage/install.sh $(BIN)/release-stage/uninstall.sh
@@ -94,7 +95,7 @@ release: build app
 	printf 'Gatekeeper (first launch of Umbra.app): the app is ad-hoc signed, not\nnotarized. macOS refuses the first launch; on Sequoia (15+) right-click Open\nno longer bypasses it. Instead open Umbra (it is blocked), then System Settings\n> Privacy & Security > scroll down > Open Anyway. Or clear the flag directly:\n  xattr -dr com.apple.quarantine /Applications/Umbra.app\n\n' >> $(BIN)/release-stage/INSTALL.txt
 	printf 'First-run note: umbrad ships ad-hoc codesigned with the\ncom.apple.security.virtualization entitlement; macOS shows an interactive,\none-time permission prompt the first time it boots a VM -- approve it to\nallow Virtualization.framework access.\n\n' >> $(BIN)/release-stage/INSTALL.txt
 	printf 'Docs: https://github.com/ForceAI-KW/umbra\nTroubleshooting: docs/PITFALLS-EXTERNAL.md, docs/runbooks/\n' >> $(BIN)/release-stage/INSTALL.txt
-	tar -czf $(RELEASE_TARBALL) -C $(BIN)/release-stage umbrad umbra Umbra.app LICENSE INSTALL.txt install.sh uninstall.sh
+	tar -czf $(RELEASE_TARBALL) -C $(BIN)/release-stage umbrad umbra Umbra.app vz.entitlements LICENSE INSTALL.txt install.sh uninstall.sh
 	rm -rf $(BIN)/release-stage
 	@echo "release: $(RELEASE_TARBALL)"
 

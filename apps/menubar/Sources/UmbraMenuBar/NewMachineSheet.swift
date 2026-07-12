@@ -29,6 +29,12 @@ struct NewMachineSheet: View {
                 Stepper("Disk: \(diskGiB) GiB", value: $diskGiB, in: 8...512)
             }
 
+            if let actionError = model.actionError {
+                Text(actionError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -36,7 +42,10 @@ struct NewMachineSheet: View {
                     creating = true
                     Task {
                         await model.createMachine(name, cpus: cpus, memoryGiB: memoryGiB, diskGiB: diskGiB)
-                        dismiss()
+                        creating = false
+                        if model.actionError == nil {
+                            dismiss()
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)

@@ -3,9 +3,13 @@ import SwiftUI
 // Real Settings pane, reachable via Cmd-, / the app menu on a regular (dock)
 // app — see docs/research/full-app-and-dmg.md §1-2. Four tabs: Defaults
 // (NewMachineSheet's @AppStorage knobs), Daemon (install/uninstall/restart
-// the LaunchAgent), Advanced (CLI path override + resolver install), About.
+// the LaunchAgent), Advanced (CLI path override), About.
 // `model` is inherited from the ancestor `.environmentObject` UmbraApp
 // attaches to the Settings scene — no need to re-attach it per tab.
+// The top-level TabView registers as an open surface (surfaceAppeared /
+// surfaceDisappeared) so the Daemon tab's status reflects live polling
+// while Settings is the only open window, same refcount API
+// MenuBarView/DashboardView use.
 
 struct SettingsView: View {
     @EnvironmentObject var model: StatusModel
@@ -26,6 +30,8 @@ struct SettingsView: View {
         }
         .frame(width: 460)
         .frame(minHeight: 320)
+        .onAppear { model.surfaceAppeared() }
+        .onDisappear { model.surfaceDisappeared() }
     }
 }
 
@@ -92,12 +98,9 @@ private struct DaemonSettingsTab: View {
     }
 }
 
-/// Advanced tab: CLI path override (honored first by `umbraCLIPath()`) and
-/// the `/etc/resolver/umbra.local` installer.
+/// Advanced tab: CLI path override (honored first by `umbraCLIPath()`).
 private struct AdvancedSettingsTab: View {
-    @EnvironmentObject var model: StatusModel
     @AppStorage("cliPathOverride") private var cliPathOverride = ""
-    @State private var resolverBusy = false
 
     var body: some View {
         Form {
@@ -105,29 +108,6 @@ private struct AdvancedSettingsTab: View {
             Text("Leave blank to auto-detect (bundled → Homebrew → /usr/local/bin).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-            Divider()
-
-            HStack {
-                Button("Install /etc/resolver/umbra.local") {
-                    resolverBusy = true
-                    Task {
-                        await model.installResolverEntry()
-                        resolverBusy = false
-                    }
-                }
-                .disabled(resolverBusy)
-                if resolverBusy {
-                    ProgressView()
-                        .scaleEffect(0.6)
-                }
-            }
-
-            if let resolverError = model.resolverError {
-                Text(resolverError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
         }
         .padding()
     }

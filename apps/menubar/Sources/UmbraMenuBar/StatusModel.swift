@@ -23,10 +23,10 @@ final class StatusModel: ObservableObject {
     /// (Settings → Daemon), surfaced to the user instead of swallowed. `nil`
     /// once an action succeeds.
     @Published var installError: String?
-    /// Last error from `installResolverEntry()` (Settings → Advanced), kept
-    /// separate from `installError` so an Advanced-tab failure doesn't bleed
-    /// into the Onboarding/Daemon-tab error display.
-    @Published var resolverError: String?
+    /// Last error from `createMachine()`/`deleteMachine()`, surfaced by
+    /// `NewMachineSheet`/`MachineDetailView` instead of silently swallowed.
+    /// Cleared at the start of each call.
+    @Published var actionError: String?
 
     /// Standard install location LaunchAgent's `--bin` points at (§3,
     /// docs/research/full-app-and-dmg.md — Option A), also what
@@ -124,11 +124,12 @@ final class StatusModel: ObservableObject {
     func createMachine(_ name: String, cpus: Int, memoryGiB: Int, diskGiB: Int) async {
         guard let cli else { return }
         busy.insert(name)
+        actionError = nil
         defer { busy.remove(name) }
         do {
             try await cli.create(name, cpus: cpus, memoryGiB: memoryGiB, diskGiB: diskGiB)
         } catch {
-            // Best-effort, same rationale as toggleMachine.
+            actionError = error.localizedDescription
         }
         await refresh()
     }
@@ -137,11 +138,12 @@ final class StatusModel: ObservableObject {
     func deleteMachine(_ name: String) async {
         guard let cli else { return }
         busy.insert(name)
+        actionError = nil
         defer { busy.remove(name) }
         do {
             try await cli.remove(name)
         } catch {
-            // Best-effort, same rationale as toggleMachine.
+            actionError = error.localizedDescription
         }
         await refresh()
     }
@@ -222,19 +224,6 @@ final class StatusModel: ObservableObject {
             installError = error.localizedDescription
         }
         await refresh()
-    }
-
-    /// Settings → Advanced "Install /etc/resolver/umbra.local": best-effort,
-    /// one `osascript` administrator elevation. Errors surface via
-    /// `resolverError` (kept separate from `installError`, see its doc comment).
-    func installResolverEntry() async {
-        guard let cli else { return }
-        resolverError = nil
-        do {
-            try await cli.installResolverEntry()
-        } catch {
-            resolverError = error.localizedDescription
-        }
     }
 
     /// Starts a stopped/crashed machine, or stops a running one. Marks the
