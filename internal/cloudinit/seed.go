@@ -233,8 +233,16 @@ func dockerRuncmdLines() []string {
 // get.docker.com, no dockerWriteFiles systemd override and no tcp:2375
 // iptables rule — a CI runner's dockerd must stay local-socket only, since
 // it runs untrusted PR code and must never be reachable over the network.
+//
+// Also installs the base build toolchain (build-essential/pkg-config + common
+// CLI tools). Real CI jobs run `npm ci`/`node-gyp` etc. that compile native
+// modules and need a C/C++ toolchain — the bare cloud image lacks it, so a
+// docker-only runner fails at "Install dependencies". node/pnpm themselves are
+// provided per-run by the workflows' setup-node action, so they're not here.
 func ciRunnerRuncmdLines() []string {
 	return []string{
+		"DEBIAN_FRONTEND=noninteractive apt-get update -qq",
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config git curl unzip jq",
 		"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)",
 		"usermod -aG docker umbra",
 		"systemctl enable docker",
