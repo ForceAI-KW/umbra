@@ -30,6 +30,13 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version: '1.25', check-latest: true }
       - run: make build
+  menubar:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build --package-path apps/menubar
+      - run: swift test --package-path apps/menubar
   vuln:
     runs-on: macos-14
     timeout-minutes: 5
@@ -52,7 +59,7 @@ jobs:
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           /tmp/gitleaks detect --source . --redact -v
   notify-failure:
-    needs: [lint, unit, build, vuln, gitleaks]
+    needs: [lint, unit, build, menubar, vuln, gitleaks]
     if: failure() && github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 2
