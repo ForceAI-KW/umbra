@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 )
 
 // Dialer is satisfied by *netstack.Stack; abstracted so tests can inject a
@@ -69,10 +70,35 @@ func (b *Bridge) pipe(ctx context.Context, hostConn net.Conn) {
 		return // client sees a dropped connection; docker CLI reports "cannot connect"
 	}
 	defer guestConn.Close()
-	done := make(chan struct{}, 2)
-	go func() { io.Copy(guestConn, hostConn); done <- struct{}{} }()
-	go func() { io.Copy(hostConn, guestConn); done <- struct{}{} }()
-	<-done
+
+	// Wait for BOTH directions, half-closing the write side of each when its
+	// copy finishes. Closing both conns as soon as the FIRST copy returned
+	// (as a naive proxy does) truncates streaming responses: the docker CLI
+	// finishes sending its short request, and that close would cut off
+	// dockerd's still-streaming reply (e.g. `docker run` pull + container
+	// output). Half-close signals EOF one direction at a time instead.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		io.Copy(guestConn, hostConn)
+		halfCloseWrite(guestConn) // request done → tell dockerd, keep reading its reply
+	}()
+	go func() {
+		defer wg.Done()
+		io.Copy(hostConn, guestConn)
+		halfCloseWrite(hostConn)
+	}()
+	wg.Wait()
+}
+
+// halfCloseWrite closes the write half of a connection if it supports it
+// (both *net.UnixConn on the host side and gvisor's TCP conn on the guest
+// side do), so the peer sees EOF without the read half being torn down.
+func halfCloseWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
 }
 
 // Close stops accepting new connections.
