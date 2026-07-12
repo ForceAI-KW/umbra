@@ -13,7 +13,7 @@ via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
 |---|---|---|
 | M1 | Core VM lifecycle: Ubuntu machines, shell, VirtioFS home share, verified stop | ✅ Done — warm boot to SSH-ready in ~7s |
 | M2 | Networking: gvisor-tap-vsock NAT (VPN-safe), `*.umbra.local` DNS, port forwarding | ✅ Done |
-| M3 | Docker: dedicated dockerd VM + `umbra` docker context | Not started |
+| M3 | Docker: dedicated dockerd VM + `umbra` docker context | ✅ Done |
 | M4 | launchd autostart + CI-runner machine cutover | Not started |
 | M5 | SwiftUI menu bar app | Not started |
 | M6 | Rosetta (amd64) + OSS release polish | Not started |
@@ -62,6 +62,32 @@ always current.
 
 The host cannot route directly into the userspace network, so reaching a guest
 always goes through a forward (`umbra shell` sets one up automatically).
+
+## Docker (M3)
+
+Umbra runs a dedicated dockerd VM and bridges its socket to the host, so the
+`docker` CLI and `docker compose` work unchanged (requires `brew install docker`
+— the CLI only, no Docker Desktop).
+
+```sh
+umbra docker install     # creates the reserved "docker" VM (dockerd via cloud-init)
+umbra docker start       # boots it, bridges the socket, sets docker context "umbra"
+docker run --rm hello-world
+docker compose up
+umbra docker status
+umbra docker stop
+umbra docker uninstall   # removes the VM and the docker context
+```
+
+The socket is bridged at `~/.umbra/run/docker.sock` (context `umbra`, made
+current on every start). dockerd listens on TCP inside the VM, **firewalled to
+the host only** (`iptables` drops `:2375` from every source except the gateway)
+— every VM shares one L2 segment, so an unauthenticated docker API must not be
+reachable by other guests (e.g. a CI runner).
+
+Not yet implemented (deferred): per-container `<name>.umbra.local` DNS and
+auto-forwarding of published container ports (design-spec "docker-event-driven"
+feature) — M3 delivers the VM + socket + context foundation.
 
 ## Build
 

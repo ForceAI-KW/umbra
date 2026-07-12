@@ -88,3 +88,18 @@ func TestUsedIPsCollectsAssigned(t *testing.T) {
 		t.Fatalf("got %v", ips)
 	}
 }
+
+func TestRoleRoundtripAndReserved(t *testing.T) {
+	r := newTestRegistry(t)
+	m := &Machine{Name: "docker", CPUs: 2, MemoryMiB: 4096, DiskGiB: 40, Image: "ubuntu:noble", IP: "192.168.127.10", Role: "docker"}
+	if err := r.Save(m); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Load("docker")
+	if got.Role != "docker" {
+		t.Fatalf("role = %q", got.Role)
+	}
+	if !IsReserved("docker") || IsReserved("dev") {
+		t.Fatal("IsReserved wrong")
+	}
+}

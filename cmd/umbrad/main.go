@@ -142,7 +142,18 @@ func run(logger *slog.Logger) error {
 		return ip, nil
 	}
 
-	srv := api.NewServer(reg, mgr, provision, ready, forwarderAdapter{st: st})
+	// daemonCtx bounds every background goroutine's lifetime (autostart, the
+	// supervisor, and — from Task 5 — the docker socket bridge's Serve loop):
+	// cancelling it on shutdown lets them all exit promptly so the wg.Waits
+	// below don't stall the shutdown budget. Created here (rather than at its
+	// former spot right before autostart) so dockerController can capture it.
+	daemonCtx, daemonCancel := context.WithCancel(context.Background())
+	defer daemonCancel()
+	var bridgeWG sync.WaitGroup
+
+	docker := newDockerController(reg, mgr, st, provision, ready, logger, daemonCtx, &bridgeWG)
+
+	srv := api.NewServer(reg, mgr, provision, ready, forwarderAdapter{st: st}, docker)
 
 	sock := paths.APISocket()
 	_ = os.Remove(sock) // stale socket from a previous run
@@ -159,11 +170,6 @@ func run(logger *slog.Logger) error {
 	go func() { errCh <- httpSrv.Serve(l) }()
 	logger.Info("umbrad listening", "socket", sock)
 
-	// daemonCtx bounds every autostart goroutine's lifetime: cancelling it on
-	// shutdown lets Start's entry ctx check and WaitReady's ctx select exit
-	// fast, so wg.Wait() below doesn't stall the shutdown budget.
-	daemonCtx, daemonCancel := context.WithCancel(context.Background())
-	defer daemonCancel()
 	var autostartWG sync.WaitGroup
 
 	// autostart-flagged machines (fwb-ci pattern; launchd wiring lands in M4)
@@ -232,9 +238,10 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutting down", "signal", s.String())
 	}
 
-	daemonCancel()      // stop/short-circuit any in-flight or pending autostarts (and the supervisor) first
+	daemonCancel()      // stop/short-circuit any in-flight or pending autostarts, the supervisor, and the docker bridge's Serve loop first
 	autostartWG.Wait()  // let them exit before StopAll touches the same instances
 	supervisorWG.Wait() // let the supervisor's Run return before StopAll touches the same instances
+	bridgeWG.Wait()     // let the docker bridge's Serve return (its listener is closed by daemonCtx cancellation above)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()

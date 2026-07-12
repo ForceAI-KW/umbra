@@ -23,7 +23,7 @@ var rootCmd = &cobra.Command{
 }
 
 func execute() int {
-	rootCmd.AddCommand(createCmd, listCmd, startCmd, stopCmd, rmCmd, shellCmd, statusCmd, forwardCmd)
+	rootCmd.AddCommand(createCmd, listCmd, startCmd, stopCmd, rmCmd, shellCmd, statusCmd, forwardCmd, dockerCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1

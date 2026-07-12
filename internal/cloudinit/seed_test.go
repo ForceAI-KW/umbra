@@ -75,6 +75,80 @@ func TestBuildSeedProducesCidataISO(t *testing.T) {
 	}
 }
 
+func TestBuildDockerSeed(t *testing.T) {
+	dir := t.TempDir()
+	m := &registry.Machine{Name: "docker", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20, Image: "ubuntu:noble", IP: "192.168.127.20", Role: registry.ReservedDockerName}
+	iso, err := BuildSeed(m, dir, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := readISOFile(t, iso, "user-data")
+	nc := readISOFile(t, iso, "network-config")
+
+	for _, want := range []string{
+		"get.docker.com",
+		"tcp://0.0.0.0:2375",
+		"--dport 2375 ! -s 192.168.127.1 -j DROP",
+		"systemctl restart docker",
+		"ssh-ed25519 AAAATEST umbra", // ssh key still present
+	} {
+		if !strings.Contains(ud, want) {
+			t.Fatalf("docker user-data missing %q:\n%s", want, ud)
+		}
+	}
+	if want := `addresses: [ "192.168.127.20/24" ]`; !strings.Contains(nc, want) { // static netplan still present
+		t.Fatalf("docker network-config missing %q:\n%s", want, nc)
+	}
+
+	if n := strings.Count(ud, "runcmd:"); n != 1 {
+		t.Fatalf("expected exactly one runcmd: key, got %d:\n%s", n, ud)
+	}
+
+	// A non-docker machine must not get any docker provisioning.
+	dir2 := t.TempDir()
+	m2 := &registry.Machine{Name: "t4", CPUs: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu:noble", IP: "192.168.127.21"}
+	iso2, err := BuildSeed(m2, dir2, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud2 := readISOFile(t, iso2, "user-data")
+	if strings.Contains(ud2, "get.docker.com") {
+		t.Fatalf("non-docker machine's user-data unexpectedly contains docker provisioning:\n%s", ud2)
+	}
+}
+
+func readISOFile(t *testing.T, isoPath, name string) string {
+	t.Helper()
+	f, err := os.Open(isoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := iso9660.OpenImage(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := img.RootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := root.GetChildren()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range children {
+		if c.Name() == name {
+			b, err := io.ReadAll(c.Reader())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(b)
+		}
+	}
+	t.Fatalf("no %s in ISO %s", name, isoPath)
+	return ""
+}
+
 func keys(m map[string]string) []string {
 	var out []string
 	for k := range m {

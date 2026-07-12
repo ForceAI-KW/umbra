@@ -31,7 +31,21 @@ growpart:
 mounts:
   - [home, /mnt/mac, virtiofs, "defaults,nofail", "0", "0"]
 ssh_pwauth: false
-%s`
+%s%s`
+
+// dockerWriteFiles renders the write_files entry for the dockerd systemd
+// override. write_files runs before runcmd, so the file exists by the time
+// runcmd's `systemctl daemon-reload` runs — avoids a multi-line heredoc
+// inside a runcmd YAML list item.
+const dockerWriteFiles = `write_files:
+  - path: /etc/systemd/system/docker.service.d/override.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375
+`
 
 const metaDataTmpl = `instance-id: umbra-%s
 local-hostname: %s
@@ -76,7 +90,11 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string, hosts map[string]
 	}
 	defer w.Cleanup()
 
-	userData := fmt.Sprintf(userDataTmpl, sshPub, hostsRuncmd(hosts))
+	writeFiles := ""
+	if m.Role == registry.ReservedDockerName {
+		writeFiles = dockerWriteFiles
+	}
+	userData := fmt.Sprintf(userDataTmpl, sshPub, writeFiles, runcmdSection(hosts, m.Role))
 	metaData := fmt.Sprintf(metaDataTmpl, m.Name, m.Name)
 	networkConfig := fmt.Sprintf(networkConfigTmpl, m.IP, netstack.Gateway, netstack.Gateway)
 	if err := w.AddFile(strings.NewReader(userData), "user-data"); err != nil {
@@ -105,12 +123,31 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string, hosts map[string]
 	return isoPath, os.Rename(isoPath+".tmp", isoPath)
 }
 
-// hostsRuncmd renders a cloud-config runcmd block that appends one line per
-// hosts entry to the guest's /etc/hosts, for guest-to-guest name
-// resolution. Entries with an empty IP are skipped. Returns "" (no runcmd
-// section) when hosts is empty. Not idempotent across reboots — fine for
-// first boot, per M2 scope.
-func hostsRuncmd(hosts map[string]string) string {
+// runcmdSection assembles the single cloud-config runcmd: block cloud-init
+// permits, merging hosts-propagation lines with the docker provisioning
+// lines (when role is the reserved docker machine). Returns "" (no runcmd
+// section) when there are no lines to emit.
+func runcmdSection(hosts map[string]string, role string) string {
+	lines := hostsRuncmdLines(hosts)
+	if role == registry.ReservedDockerName {
+		lines = append(lines, dockerRuncmdLines()...)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("runcmd:\n")
+	for _, line := range lines {
+		fmt.Fprintf(&b, "  - %s\n", line)
+	}
+	return b.String()
+}
+
+// hostsRuncmdLines renders one printf line per hosts entry, appended to the
+// guest's /etc/hosts for guest-to-guest name resolution. Entries with an
+// empty IP are skipped. Not idempotent across reboots — fine for first
+// boot, per M2 scope.
+func hostsRuncmdLines(hosts map[string]string) []string {
 	names := make([]string, 0, len(hosts))
 	for name, ip := range hosts {
 		if ip == "" {
@@ -118,17 +155,44 @@ func hostsRuncmd(hosts map[string]string) string {
 		}
 		names = append(names, name)
 	}
-	if len(names) == 0 {
-		return ""
-	}
 	sort.Strings(names)
 
-	var b strings.Builder
-	b.WriteString("runcmd:\n")
+	lines := make([]string, 0, len(names))
 	for _, name := range names {
 		// printf, not `echo -e`: cloud-init runs runcmd via dash, whose echo
 		// prints "-e" literally and doesn't expand \t (verified in-guest).
-		fmt.Fprintf(&b, "  - printf '%%s\\t%%s.umbra.local %%s\\n' '%s' '%s' '%s' >> /etc/hosts\n", hosts[name], name, name)
+		lines = append(lines, fmt.Sprintf(`printf '%%s\t%%s.umbra.local %%s\n' '%s' '%s' '%s' >> /etc/hosts`, hosts[name], name, name))
 	}
-	return b.String()
+	return lines
+}
+
+// dockerRuncmdLines renders the docker provisioning runcmd lines for the
+// reserved docker machine (verbatim intent from docs/research/dockerd-in-vm.md
+// §1). dockerd is installed via get.docker.com (matches Lima's own
+// docker.yaml template); its systemd unit is overridden (via the
+// dockerWriteFiles entry, which write_files applies before runcmd runs) to
+// also listen on tcp://0.0.0.0:2375, firewalled via iptables to only the
+// netstack gateway IP — every guest VM shares the same L2 segment, and an
+// unauthenticated docker TCP API is root-equivalent access.
+func dockerRuncmdLines() []string {
+	return []string{
+		// Close the firewall on tcp:2375 BEFORE dockerd can bind it, so the
+		// unauthenticated API is never reachable subnet-wide (other guests,
+		// incl. an untrusted CI runner) even for the boot-time window.
+		fmt.Sprintf("iptables -A INPUT -p tcp --dport 2375 ! -s %s -j DROP", netstack.Gateway),
+		"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)",
+		"usermod -aG docker umbra",
+		"systemctl daemon-reload",
+		// restart, not `enable --now`: get.docker.com already starts dockerd,
+		// so `enable --now` no-ops on the running unit and our tcp:2375
+		// ExecStart override never takes effect. restart forces the override
+		// (the likely cause of intermittent /_ping readiness timeouts).
+		"systemctl enable docker",
+		"systemctl restart docker",
+		// Persist the rule across reboots (iptables-persistent installs the
+		// netfilter-persistent save hook). DEBIAN_FRONTEND avoids the
+		// interactive "save current rules?" debconf prompt hanging boot.
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent",
+		"netfilter-persistent save",
+	}
 }

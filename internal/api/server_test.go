@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -74,17 +75,54 @@ func (f *fakeForwarder) Forwards() ([]ForwardView, error) {
 	return append([]ForwardView(nil), f.forwards...), nil
 }
 
+// fakeDocker is an in-memory Docker fake: Install/Start/Stop/Uninstall
+// mutate a tiny bit of state so tests can assert the happy paths and error
+// cases (e.g. Start before Install) without a real dockerbridge/dockerctx.
+type fakeDocker struct {
+	installed bool
+	running   bool
+}
+
+func (f *fakeDocker) Install(ctx context.Context) (MachineView, error) {
+	f.installed = true
+	return MachineView{Machine: registry.Machine{Name: "docker", Role: "docker", CPUs: 2, MemoryMiB: 4096, DiskGiB: 40}}, nil
+}
+func (f *fakeDocker) Start(ctx context.Context) (MachineView, error) {
+	if !f.installed {
+		return MachineView{}, errors.New("docker not installed")
+	}
+	f.running = true
+	return MachineView{Machine: registry.Machine{Name: "docker", Role: "docker"}, State: vm.StateRunning, IP: "192.168.127.10"}, nil
+}
+func (f *fakeDocker) Stop(ctx context.Context) error {
+	f.running = false
+	return nil
+}
+func (f *fakeDocker) Status(ctx context.Context) DockerStatus {
+	return DockerStatus{Installed: f.installed, Running: f.running, IP: "192.168.127.10", Socket: "/tmp/docker.sock", ContextCurrent: f.running}
+}
+func (f *fakeDocker) Uninstall(ctx context.Context) error {
+	f.installed, f.running = false, false
+	return nil
+}
+
 func newTestServer(t *testing.T) (*httptest.Server, *fakeLC, *fakeForwarder) {
+	ts, lc, fwd, _ := newTestServerWithDocker(t)
+	return ts, lc, fwd
+}
+
+func newTestServerWithDocker(t *testing.T) (*httptest.Server, *fakeLC, *fakeForwarder, *fakeDocker) {
 	reg := registry.New(t.TempDir())
 	lc := &fakeLC{states: map[string]vm.State{}}
 	fwd := &fakeForwarder{}
+	dk := &fakeDocker{}
 	s := NewServer(reg, lc,
 		func(ctx context.Context, m *registry.Machine) error { return nil },
 		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
-		fwd)
+		fwd, dk)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
-	return ts, lc, fwd
+	return ts, lc, fwd, dk
 }
 
 func postJSON(t *testing.T, url string, body any) *http.Response {
@@ -193,7 +231,7 @@ func TestDeleteZombieMachineReturns409(t *testing.T) {
 	s := NewServer(reg, fakeZombieLC{},
 		func(ctx context.Context, m *registry.Machine) error { return nil },
 		func(ctx context.Context, m *registry.Machine) (string, error) { return "", nil },
-		&fakeForwarder{})
+		&fakeForwarder{}, &fakeDocker{})
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -236,7 +274,7 @@ func newForwardTestServer(t *testing.T) (*httptest.Server, *fakeLC, *fakeForward
 			return reg.Save(m)
 		},
 		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
-		fwd)
+		fwd, &fakeDocker{})
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts, lc, fwd
@@ -400,5 +438,133 @@ func TestForwardRemoveRejectsUnownedPort(t *testing.T) {
 	resp, _ := http.DefaultClient.Do(req)
 	if resp.StatusCode != 404 {
 		t.Fatalf("delete unowned forward: %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestCreateRejectsReservedDockerName covers the guard added for Task 5: the
+// "docker" name is reserved for the umbra-managed docker VM, so a normal
+// create must 400 with the documented hint, not silently create a machine
+// that would collide with `umbra docker install`.
+func TestCreateRejectsReservedDockerName(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	resp := postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "docker"})
+	if resp.StatusCode != 400 {
+		t.Fatalf("create %q: got %d, want 400", "docker", resp.StatusCode)
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		t.Fatal(err)
+	}
+	want := `"docker" is reserved — use 'umbra docker install'`
+	if e.Error != want {
+		t.Fatalf("error message = %q, want %q", e.Error, want)
+	}
+}
+
+// TestListMachinesExcludesReservedRole covers the visibility rule from
+// research §4: a machine with a non-empty Role (the docker VM) must not
+// appear in the normal machines list.
+func TestListMachinesExcludesReservedRole(t *testing.T) {
+	reg := registry.New(t.TempDir())
+	lc := &fakeLC{states: map[string]vm.State{}}
+	s := NewServer(reg, lc,
+		func(ctx context.Context, m *registry.Machine) error { return nil },
+		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
+		&fakeForwarder{}, &fakeDocker{})
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	// Seed a normal machine via the API, and the reserved docker machine
+	// directly in the registry (its own create path is POST /v1/docker/install,
+	// not POST /v1/machines — the API create handler rejects the name).
+	if resp := postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "dev"}); resp.StatusCode != 201 {
+		t.Fatalf("create dev: %d", resp.StatusCode)
+	}
+	if err := reg.Save(&registry.Machine{Name: "docker", Role: "docker", CPUs: 2, MemoryMiB: 4096, DiskGiB: 40}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/machines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []MachineView
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "dev" {
+		t.Fatalf("list = %+v, want only [dev]", list)
+	}
+}
+
+func TestDockerInstallStartStopStatusUninstall(t *testing.T) {
+	ts, _, _, dk := newTestServerWithDocker(t)
+
+	resp := postJSON(t, ts.URL+"/v1/docker/install", nil)
+	if resp.StatusCode != 201 {
+		t.Fatalf("install: %d, want 201", resp.StatusCode)
+	}
+	var mv MachineView
+	if err := json.NewDecoder(resp.Body).Decode(&mv); err != nil {
+		t.Fatal(err)
+	}
+	if mv.Name != "docker" || mv.Role != "docker" {
+		t.Fatalf("install response = %+v", mv)
+	}
+	if !dk.installed {
+		t.Fatal("fakeDocker.installed should be true after install")
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/docker/start", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("start: %d, want 200", resp.StatusCode)
+	}
+	mv = MachineView{}
+	if err := json.NewDecoder(resp.Body).Decode(&mv); err != nil {
+		t.Fatal(err)
+	}
+	if mv.IP != "192.168.127.10" || mv.State != vm.StateRunning {
+		t.Fatalf("start response = %+v", mv)
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/docker/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st DockerStatus
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Installed || !st.Running || st.IP != "192.168.127.10" {
+		t.Fatalf("status = %+v", st)
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/docker/stop", nil)
+	if resp.StatusCode != 204 {
+		t.Fatalf("stop: %d, want 204", resp.StatusCode)
+	}
+	if dk.running {
+		t.Fatal("fakeDocker.running should be false after stop")
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/docker/uninstall", nil)
+	if resp.StatusCode != 204 {
+		t.Fatalf("uninstall: %d, want 204", resp.StatusCode)
+	}
+	if dk.installed {
+		t.Fatal("fakeDocker.installed should be false after uninstall")
+	}
+}
+
+// TestDockerStartBeforeInstallReturns500 covers the fake's error path: the
+// interface reports a plain error (no special typing required at this
+// layer), which the route surfaces as a 500 with the error message.
+func TestDockerStartBeforeInstallReturns500(t *testing.T) {
+	ts, _, _, _ := newTestServerWithDocker(t)
+	resp := postJSON(t, ts.URL+"/v1/docker/start", nil)
+	if resp.StatusCode != 500 {
+		t.Fatalf("start before install: %d, want 500", resp.StatusCode)
 	}
 }

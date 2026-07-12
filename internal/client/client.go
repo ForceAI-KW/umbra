@@ -53,6 +53,16 @@ type forwardRequest struct {
 	Protocol  string `json:"protocol"`
 }
 
+// DockerStatus mirrors api.DockerStatus; kept as its own type here so the
+// CLI doesn't import internal/api.
+type DockerStatus struct {
+	Installed      bool   `json:"installed"`
+	Running        bool   `json:"running"`
+	IP             string `json:"ip,omitempty"`
+	Socket         string `json:"socket,omitempty"`
+	ContextCurrent bool   `json:"context_current"`
+}
+
 func New(socketPath string) *Client {
 	return &Client{http: &http.Client{
 		Transport: &http.Transport{
@@ -153,4 +163,23 @@ func (c *Client) RemoveForward(ctx context.Context, name string, localPort int, 
 		path += "?protocol=udp"
 	}
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
+}
+
+func (c *Client) DockerInstall(ctx context.Context) (*MachineView, error) {
+	var mv MachineView
+	return &mv, c.do(ctx, http.MethodPost, "/v1/docker/install", nil, &mv)
+}
+func (c *Client) DockerStart(ctx context.Context) (*MachineView, error) {
+	var mv MachineView
+	return &mv, c.do(ctx, http.MethodPost, "/v1/docker/start", nil, &mv)
+}
+func (c *Client) DockerStop(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/v1/docker/stop", nil, nil)
+}
+func (c *Client) DockerStatus(ctx context.Context) (*DockerStatus, error) {
+	var ds DockerStatus
+	return &ds, c.do(ctx, http.MethodGet, "/v1/docker/status", nil, &ds)
+}
+func (c *Client) DockerUninstall(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/v1/docker/uninstall", nil, nil)
 }
