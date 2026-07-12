@@ -15,7 +15,7 @@ via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
 | M2 | Networking: gvisor-tap-vsock NAT (VPN-safe), `*.umbra.local` DNS, port forwarding | ✅ Done |
 | M3 | Docker: dedicated dockerd VM + `umbra` docker context | ✅ Done |
 | M4 | launchd autostart + CI-runner cutover kit (cutover is human-gated) | ✅ Done (kit built; cutover is Ahmad's runbook) |
-| M5 | SwiftUI menu bar app | Not started |
+| M5 | SwiftUI menu bar app | ✅ Done |
 | M6 | Rosetta (amd64) + OSS release polish | Not started |
 
 ## Usage (M1)
@@ -88,6 +88,22 @@ reachable by other guests (e.g. a CI runner).
 Not yet implemented (deferred): per-container `<name>.umbra.local` DNS and
 auto-forwarding of published container ports (design-spec "docker-event-driven"
 feature) — M3 delivers the VM + socket + context foundation.
+
+## Menu bar app (M5)
+
+A menu-bar-only SwiftUI app (`Umbra.app`) — a thin client that shells out to the
+`umbra` CLI. Shows the daemon status dot, machine list (start/stop, open shell),
+and docker status/toggle.
+
+```sh
+make app          # builds + assembles bin/Umbra.app (needs the Swift toolchain / Xcode CLT)
+open bin/Umbra.app # a cube icon appears in the menu bar (no Dock icon — LSUIElement)
+```
+
+It bundles the `umbra` CLI inside `Contents/MacOS/` (found regardless of PATH),
+is ad-hoc signed (no entitlements, not sandboxed — same posture as `umbrad`),
+and opens shells by handing `umbra shell <name>` to Terminal.app. Built with
+Swift Package Manager (`apps/menubar/`), no `.xcodeproj`.
 
 ## launchd daemon + CI-runner cutover (M4)
 

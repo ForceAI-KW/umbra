@@ -103,7 +103,7 @@ Name **Umbra** (Ahmad, 2026-07-11) — the darkest core of a shadow; VMs running
 2. **M2 — Networking**: gvisor-tap-vsock NAT; `.umbra.local` DNS + host resolver; port forwarding. ✅ **DONE 2026-07-12** (deviations: static IP via netplan replaces DHCP lease lookup, so internal/vmnet is now unused/dead; per-machine auto SSH forward added since the host cannot route into the userspace stack; /etc/hosts via printf not echo -e).
 3. **M3 — Docker**: dedicated dockerd VM + socket bridge + `umbra` docker context. ✅ **DONE 2026-07-12** (bridge streaming-truncation bug found live + fixed; integration passed end-to-end once, re-runs flaky under overnight memory pressure — env not code; per-container DNS/auto-forward P18 deferred).
 4. **M4 — Autostart + fwb-ci cutover**: launchd LaunchAgent + flock single-instance guard + `umbra daemon` group; ci-runner role + cutover kit (install-runner.sh, verify workflow, runbook). ✅ **DONE 2026-07-12** (code+kit; live-org runner registration + fwb-ci2 boot + the deregister/uninstall cutover are Ahmad's human-gated runbook, docs/runbooks/ci-cutover.md).
-5. **M5 — Menu bar app** (SwiftUI thin client).
+5. **M5 — Menu bar app**: SwiftUI MenuBarExtra thin client shelling out to the umbra CLI (status, start/stop, docker toggle, open shell). ✅ **DONE 2026-07-12** (SPM + make app; launches as an LSUIElement agent; verified live).
 6. **M6 — Rosetta + OSS release**: Rosetta share, README/docs, CI, signed release artifacts, publish under `ForceAI-KW`.
 
 **Cutover constraint:** OrbStack stays untouched and running until M4's green-CI verification passes. Zero CI downtime; no migration of the existing 26 GB OrbStack disk (runner setup is scripted, not migrated).
