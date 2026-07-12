@@ -70,6 +70,7 @@ private struct DaemonSettingsTab: View {
 
             HStack {
                 Button("Install") { Task { await model.daemonInstall() } }
+                    .buttonStyle(.borderedProminent)
                     .disabled(busy)
                 Button("Uninstall") { Task { await model.daemonUninstall() } }
                     .disabled(busy)

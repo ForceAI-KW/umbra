@@ -16,16 +16,19 @@ struct UmbraApp: App {
         Window("Umbra", id: "main") {
             DashboardView()
                 .environmentObject(model)
+                .tint(.umbraAccent)
         }
 
         Settings {
             SettingsView()
                 .environmentObject(model)
+                .tint(.umbraAccent)
         }
 
         MenuBarExtra("Umbra", systemImage: "cube.fill") {
             MenuBarView()
                 .environmentObject(model)
+                .tint(.umbraAccent)
         }
         .menuBarExtraStyle(.window)
     }

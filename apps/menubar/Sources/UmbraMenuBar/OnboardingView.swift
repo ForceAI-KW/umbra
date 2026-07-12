@@ -16,13 +16,10 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "cube.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
+            UmbraMark(size: 64)
 
             Text("Welcome to Umbra")
-                .font(.title2)
-                .bold()
+                .font(.title.bold())
 
             Text("Umbra runs Linux VMs and Docker containers on Apple Silicon using Virtualization.framework. Install the background daemon to get started.")
                 .multilineTextAlignment(.center)
@@ -37,6 +34,8 @@ struct OnboardingView: View {
                 Button("Install Umbra") {
                     Task { await model.installDaemon() }
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .keyboardShortcut(.defaultAction)
                 .disabled(model.installing)
 

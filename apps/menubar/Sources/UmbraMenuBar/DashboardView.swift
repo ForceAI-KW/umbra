@@ -5,9 +5,9 @@ import AppKit
 // machine detail) once the daemon is reachable, or a placeholder while
 // first-run onboarding is needed. Shares `StatusModel` with the
 // MenuBarExtra popover via `.environmentObject` (docs/research/
-// full-app-and-dmg.md §1). Reuses MenuBarView's dot-color / state-label /
-// docker-text conventions: running=green, starting/stopping=yellow,
-// stopped=gray, crashed/zombie=red; "crashed*" label when zombie==true.
+// full-app-and-dmg.md §1). Status presentation (dot color / label / symbol)
+// comes from `StatusStyle`/`daemonDotColor` in Theme.swift — the single
+// source of truth shared with MenuBarView/MachineDetailView.
 
 struct DashboardView: View {
     @EnvironmentObject var model: StatusModel
@@ -22,7 +22,7 @@ struct DashboardView: View {
                 splitView
             }
         }
-        .frame(minWidth: 620, minHeight: 420)
+        .frame(minWidth: 700, minHeight: 460)
         .onAppear { model.surfaceAppeared() }
         .onDisappear { model.surfaceDisappeared() }
         .sheet(isPresented: $showNewMachine) {
@@ -75,13 +75,29 @@ struct DashboardView: View {
     }
 
     private var header: some View {
-        HStack {
-            statusDot(color: headerDotColor)
-            Text("Umbra").bold()
+        HStack(spacing: 8) {
+            UmbraMark(size: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Umbra")
+                    .font(.headline)
+                Text(daemonStateText)
+                    .font(.caption2)
+                    .foregroundStyle(daemonDotColor(daemon: model.status?.daemon, cliMissing: model.cliMissing))
+            }
             Spacer()
             settingsButton
         }
-        .padding()
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var daemonStateText: String {
+        if model.cliMissing { return "daemon —" }
+        switch model.status?.daemon {
+        case "up": return "daemon up"
+        case "down": return "daemon down"
+        default: return "daemon —"
+        }
     }
 
     // `SettingsLink` is macOS 14+ only; the package's deployment target is
@@ -106,46 +122,28 @@ struct DashboardView: View {
         }
     }
 
-    private var headerDotColor: Color {
-        if model.cliMissing { return .gray }
-        switch model.status?.daemon {
-        case "up": return .green
-        case "down": return .red
-        default: return .gray
-        }
-    }
-
     private func machineRow(_ machine: Machine) -> some View {
-        HStack {
-            statusDot(color: machineDotColor(machine))
+        let s = StatusStyle(machine)
+        return HStack {
+            Image(systemName: s.symbol)
+                .font(.body)
+                .foregroundStyle(s.color)
             Text(machine.name)
-            Text(stateLabel(machine))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.body)
+            Spacer()
+            StatusPill(color: s.color, text: s.label)
         }
-    }
-
-    private func machineDotColor(_ machine: Machine) -> Color {
-        if machine.zombie == true { return .red }
-        switch machine.state {
-        case .running: return .green
-        case .starting, .stopping: return .yellow
-        case .stopped: return .gray
-        case .crashed: return .red
-        }
-    }
-
-    private func stateLabel(_ machine: Machine) -> String {
-        machine.zombie == true ? "crashed*" : machine.state.rawValue
+        .padding(.vertical, 4)
     }
 
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Docker")
-                Text(dockerStatusText)
+                Image(systemName: "shippingbox.fill")
                     .foregroundStyle(.secondary)
+                Text("Docker")
                 Spacer()
+                StatusPill(color: dockerColor, text: dockerStatusText)
                 if model.status?.docker?.installed == true {
                     Button {
                         Task { await model.toggleDocker() }
@@ -159,11 +157,22 @@ struct DashboardView: View {
                     .buttonStyle(.borderless)
                 }
             }
-            Text("Rosetta: \(rosettaStatusText)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack {
+                Image(systemName: "cpu")
+                    .foregroundStyle(.secondary)
+                Text("Rosetta")
+                Spacer()
+                Text(rosettaStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding()
+        .padding(12)
+    }
+
+    private var dockerColor: Color {
+        guard let docker = model.status?.docker, docker.installed else { return .umbraStopped }
+        return docker.running ? .umbraRunning : .umbraStopped
     }
 
     private var dockerStatusText: String {
@@ -177,19 +186,14 @@ struct DashboardView: View {
     }
 
     private var detailPlaceholder: some View {
-        VStack(spacing: 8) {
-            Text("Select a machine")
+        VStack(spacing: 10) {
+            UmbraMark(size: 44)
+            Text("No machine selected")
                 .font(.title3)
-            Text("or create one with +")
+            Text("Pick a machine on the left, or create one with +")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func statusDot(color: Color) -> some View {
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
     }
 }
 
