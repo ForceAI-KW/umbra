@@ -106,7 +106,9 @@ Name **Umbra** (Ahmad, 2026-07-11) — the darkest core of a shadow; VMs running
 5. **M5 — Menu bar app**: SwiftUI MenuBarExtra thin client shelling out to the umbra CLI (status, start/stop, docker toggle, open shell). ✅ **DONE 2026-07-12** (SPM + make app; launches as an LSUIElement agent; verified live).
 6. **M6 — Rosetta + OSS release**: Rosetta share, README/docs, CI, signed release artifacts, publish under `ForceAI-KW`. ✅ **DONE 2026-07-12** (Rosetta VirtioFS share + F-flagged binfmt_misc handler, role-gated to docker/ci-runner machines, `umbra rosetta status`; `make release` tarball — ad-hoc signed binaries, no Developer ID/notarization, deliberately out of scope for local/OSS distribution; CONTRIBUTING.md + README polish).
 
-All 6 milestones complete — see [Definition of done](#definition-of-done-v1) below (publish-under-`ForceAI-KW` + the fwb-ci human-gated cutover remain Ahmad's runbook steps, per M4).
+7. **M7 — Full dock app + `.dmg`**: promoted the M5 menu-bar-only agent to a real dock app — `Window` dashboard (machine list + detail with start/stop/shell/delete, New Machine sheet, Docker + Rosetta footer), a `Settings` pane (defaults / daemon management / CLI-path override / about), and a first-run onboarding **Install** flow (bundle-copy to `/usr/local/bin` + entitlement-safe re-sign + `daemon install`, mirroring `scripts/install.sh`), kept the menu-bar cube. Ships as a drag-to-Applications `make dmg`. ✅ **DONE 2026-07-12** (entitlement-safe bundling — no `--deep`, `make app` verifies `umbrad` keeps `com.apple.security.virtualization`; `.dmg` live-verified: mounts, strict-signature valid, entitlement survives the pipeline, launches as a dock app).
+
+All 7 milestones complete — see [Definition of done](#definition-of-done-v1) below (publish-under-`ForceAI-KW` + the fwb-ci human-gated cutover remain Ahmad's runbook steps, per M4).
 
 **Cutover constraint:** OrbStack stays untouched and running until M4's green-CI verification passes. Zero CI downtime; no migration of the existing 26 GB OrbStack disk (runner setup is scripted, not migrated).
 

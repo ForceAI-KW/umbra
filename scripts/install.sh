@@ -66,9 +66,18 @@ $SUDO cp "$UMBRAD" "$BIN_DIR/umbrad"
 $SUDO cp "$UMBRA"  "$BIN_DIR/umbra"
 # Re-sign in place: copying can invalidate the ad-hoc signature, and umbrad
 # needs its com.apple.security.virtualization entitlement to create VMs.
-if [ -f "$here/../build/vz.entitlements" ]; then
-  $SUDO codesign --force --entitlements "$here/../build/vz.entitlements" --sign - "$BIN_DIR/umbrad" 2>/dev/null || true
+# Look for vz.entitlements in either layout: release tarball ships it next to
+# this script (Layout B); a source checkout has it under build/ (Layout A).
+ENT=""
+if [ -f "$here/vz.entitlements" ]; then
+  ENT="$here/vz.entitlements"
+elif [ -f "$here/../build/vz.entitlements" ]; then
+  ENT="$here/../build/vz.entitlements"
+fi
+if [ -n "$ENT" ]; then
+  $SUDO codesign --force --entitlements "$ENT" --sign - "$BIN_DIR/umbrad" 2>/dev/null || true
 else
+  warn "vz.entitlements not found — umbrad will lack the virtualization entitlement; VMs will fail to boot. Re-run from a full checkout or tarball."
   $SUDO codesign --force --sign - "$BIN_DIR/umbrad" 2>/dev/null || true
 fi
 $SUDO codesign --force --sign - "$BIN_DIR/umbra" 2>/dev/null || true
@@ -78,7 +87,10 @@ if [ -n "$APP" ]; then
   say "Installing Umbra.app → $APP_DIR"
   rm -rf "$APP_DIR/Umbra.app"
   cp -R "$APP" "$APP_DIR/Umbra.app"
-  codesign --force --deep --sign - "$APP_DIR/Umbra.app" 2>/dev/null || true
+  # Outer-only re-sign, matching `make app`: --deep would re-sign the nested
+  # umbrad with the app's (empty) entitlements, stripping its virtualization
+  # entitlement and breaking VM boot.
+  codesign --force --sign - "$APP_DIR/Umbra.app" 2>/dev/null || true
 else
   warn "Umbra.app not built — skipping the menu bar app (install the Swift toolchain / Xcode CLT and re-run for it)."
 fi

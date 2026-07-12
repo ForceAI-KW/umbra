@@ -2,8 +2,20 @@
 
 Umbra is an open-source, OrbStack-style VM manager for macOS: fast Linux
 machines and Docker containers on Apple Silicon, built on Apple's
-[Virtualization.framework](https://developer.apple.com/documentation/virtualization)
-via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
+[Virtualization.framework](https://developer.apple.com/documentation/virtualization).
+
+It ships as three things sharing one engine:
+
+- **A Mac app** (`Umbra.app`) — a real dock app with a dashboard to create,
+  start, stop, and shell into machines, manage Docker, and a Settings pane;
+  plus a menu-bar cube for quick actions. Install it by dragging the `.dmg`
+  to Applications — no terminal required.
+- **A CLI** (`umbra`) — the full surface for developers and scripts.
+- **A daemon** (`umbrad`) — the Go engine that owns the VMs, networking, and
+  launchd autostart.
+
+Non-developers install the `.dmg`; developers build from source
+(`make install`). See [Install](#install).
 
 *The darkest core of a shadow — VMs running invisibly behind macOS.*
 
@@ -17,6 +29,7 @@ via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
 | M4 | launchd autostart + CI-runner cutover kit (cutover is human-gated) | ✅ Done (kit built; cutover is Ahmad's runbook) |
 | M5 | SwiftUI menu bar app | ✅ Done |
 | M6 | Rosetta (amd64) + release | ✅ Done |
+| M7 | Full dock app (dashboard + Settings + onboarding) + drag-to-Applications `.dmg` | ✅ Done |
 
 ## Usage (M1)
 
@@ -103,19 +116,33 @@ umbra rosetta status     # installed / not installed / not supported
 docker run --rm --platform linux/amd64 alpine uname -m   # -> x86_64
 ```
 
-## Menu bar app (M5)
+## The app (M5 + M7)
 
-A menu-bar-only SwiftUI app (`Umbra.app`) — a thin client that shells out to the
-`umbra` CLI. Shows the daemon status dot, machine list (start/stop, open shell),
-and docker status/toggle.
+`Umbra.app` is a full SwiftUI dock app — a thin client that shells out to the
+`umbra` CLI (no duplicate HTTP-over-unix). It has three surfaces sharing one
+`StatusModel`:
+
+- a **dashboard window** (`NavigationSplitView`) — machine list with a status
+  dot, a detail pane (start/stop, open shell, delete), a **+ New Machine**
+  sheet, and a Docker + Rosetta footer;
+- a **Settings** pane (Cmd-,) — machine-creation defaults, daemon
+  install/uninstall/restart, a CLI-path override, and About;
+- a **menu-bar cube** for quick start/stop/shell without the window.
+
+On first run (daemon not yet installed) it shows an **onboarding** screen whose
+**Install** button copies `umbra`/`umbrad` to `/usr/local/bin`, re-signs
+`umbrad` with its virtualization entitlement, and loads the launchd daemon —
+the same thing `scripts/install.sh` does.
 
 ```sh
 make app          # builds + assembles bin/Umbra.app (needs the Swift toolchain / Xcode CLT)
-open bin/Umbra.app # a cube icon appears in the menu bar (no Dock icon — LSUIElement)
+make dmg          # wraps it in bin/Umbra-<version>.dmg (drag-to-Applications)
+open bin/Umbra.app
 ```
 
-It bundles the `umbra` CLI inside `Contents/MacOS/` (found regardless of PATH),
-is ad-hoc signed (no entitlements, not sandboxed — same posture as `umbrad`),
+It bundles `umbra` + `umbrad` + `vz.entitlements` inside `Contents/`, is
+ad-hoc signed **without `--deep`** (so the nested `umbrad` keeps its
+`com.apple.security.virtualization` entitlement — `make app` verifies this),
 and opens shells by handing `umbra shell <name>` to Terminal.app. Built with
 Swift Package Manager (`apps/menubar/`), no `.xcodeproj`.
 
@@ -174,15 +201,44 @@ in the build step. See
 
 ## Install
 
+### Install (.dmg) — the app
+
+```sh
+make dmg        # bin/Umbra-<version>.dmg (a drag-to-Applications disk image)
+```
+
+1. Open `Umbra-<version>.dmg`.
+2. Drag **Umbra** onto the **Applications** shortcut in the window.
+3. Launch Umbra from Applications. On first run it walks you through an
+   **Install** step (copies `umbra`/`umbrad` onto your `PATH`, re-signs
+   `umbrad` with its virtualization entitlement, and loads the launchd
+   daemon) — the same thing `scripts/install.sh` does, just in the UI.
+
+**First-launch Gatekeeper note.** Umbra is ad-hoc signed, not
+notarized/Developer-ID (see
+[CONTRIBUTING.md](CONTRIBUTING.md#security-posture)), so a `.dmg` downloaded
+via a browser is quarantined and macOS will refuse the first launch. Since
+macOS Sequoia (15) right-click → Open no longer bypasses this — instead:
+
+- Try to open Umbra (it will be blocked), then go to **System Settings →
+  Privacy & Security**, scroll down, and click **Open Anyway**; or
+- clear the quarantine flag directly:
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/Umbra.app
+  ```
+
+**First VM boot.** The first time `umbrad` boots a VM, macOS shows a one-time
+Virtualization permission prompt — approve it.
+
+### Install (CLI tarball) — headless / servers
+
 ```sh
 make release   # bin/umbra-<version>-macos-arm64.tar.gz: umbrad, umbra,
                # Umbra.app, LICENSE, INSTALL.txt
 ```
 
-Untar it and follow `INSTALL.txt` (copy the binaries onto your `PATH`,
-`umbra daemon install`, `open Umbra.app`). There's no notarized/Developer-ID
-build — see [CONTRIBUTING.md](CONTRIBUTING.md#security-posture) — so expect a
-Gatekeeper prompt on first run.
+Untar it and run `./install.sh` (or follow `INSTALL.txt` manually: copy the
+binaries onto your `PATH`, `umbra daemon install`, `open Umbra.app`).
 
 ## Design notes
 
