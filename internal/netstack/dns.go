@@ -77,34 +77,37 @@ func tryBind() (*Resolver, error) {
 		tcpLn:   tcpLn,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
 	handler := dns.HandlerFunc(r.handleDNS)
 
-	r.udpSrv = &dns.Server{PacketConn: udpConn, Handler: handler, NotifyStartedFunc: wg.Done}
-	r.tcpSrv = &dns.Server{Listener: tcpLn, Handler: handler, NotifyStartedFunc: wg.Done}
+	// started receives one signal per server that reaches serving state.
+	// Counting signals (rather than a wg.Wait() in its own goroutine) avoids
+	// a goroutine that would park forever if a server errors before calling
+	// NotifyStartedFunc.
+	started := make(chan struct{}, 2)
+	notify := func() { started <- struct{}{} }
+	r.udpSrv = &dns.Server{PacketConn: udpConn, Handler: handler, NotifyStartedFunc: notify}
+	r.tcpSrv = &dns.Server{Listener: tcpLn, Handler: handler, NotifyStartedFunc: notify}
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- r.udpSrv.ActivateAndServe() }()
 	go func() { errCh <- r.tcpSrv.ActivateAndServe() }()
 
-	// Wait for both listeners to be actively serving, with a bound so a
+	// Wait for BOTH listeners to be actively serving, bounded so a
 	// failure-to-start doesn't hang the caller forever.
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case err := <-errCh:
-		udpConn.Close()
-		tcpLn.Close()
-		return nil, fmt.Errorf("activate dns server: %w", err)
-	case <-time.After(2 * time.Second):
-		udpConn.Close()
-		tcpLn.Close()
-		return nil, errors.New("timed out waiting for dns server to start")
+	deadline := time.After(2 * time.Second)
+	for got := 0; got < 2; {
+		select {
+		case <-started:
+			got++
+		case err := <-errCh:
+			udpConn.Close()
+			tcpLn.Close()
+			return nil, fmt.Errorf("activate dns server: %w", err)
+		case <-deadline:
+			udpConn.Close()
+			tcpLn.Close()
+			return nil, errors.New("timed out waiting for dns server to start")
+		}
 	}
 
 	return r, nil
@@ -121,8 +124,12 @@ func (r *Resolver) Port() int {
 }
 
 // Set upserts name.umbra.local -> ip. name is the bare machine name (no
-// .umbra.local suffix).
+// .umbra.local suffix). A non-IPv4 ip is ignored (would produce a malformed
+// A answer) — callers feed daemon-allocated 192.168.127.x addresses.
 func (r *Resolver) Set(name, ip string) {
+	if p := net.ParseIP(ip); p == nil || p.To4() == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.records[strings.ToLower(name)] = ip
