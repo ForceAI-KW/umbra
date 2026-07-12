@@ -28,8 +28,8 @@ struct MenuBarView: View {
             footer
         }
         .frame(width: 320)
-        .onAppear { model.startPolling() }
-        .onDisappear { model.stopPolling() }
+        .onAppear { model.surfaceAppeared() }
+        .onDisappear { model.surfaceDisappeared() }
     }
 
     private var header: some View {

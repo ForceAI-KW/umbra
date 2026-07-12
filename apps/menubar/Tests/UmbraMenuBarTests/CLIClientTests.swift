@@ -38,4 +38,45 @@ final class CLIClientTests: XCTestCase {
         let resolved = resolveCLIPath(candidates: ["/nope1", "/nope2"])
         XCTAssertNil(resolved)
     }
+
+    // MARK: - createArgs
+
+    func testCreateArgsBuildsExactArray() {
+        let args = createArgs(name: "dev", cpus: 4, memoryGiB: 8, diskGiB: 60)
+        XCTAssertEqual(args, ["create", "dev", "--cpus", "4", "--memory-gib", "8", "--disk-gib", "60"])
+    }
+
+    // MARK: - parseRosettaStatus
+
+    func testParseRosettaStatusInstalled() {
+        XCTAssertEqual(parseRosettaStatus("Rosetta: installed"), "installed")
+    }
+
+    func testParseRosettaStatusNotInstalled() {
+        XCTAssertEqual(parseRosettaStatus("Rosetta: not installed"), "notInstalled")
+    }
+
+    func testParseRosettaStatusNotSupported() {
+        XCTAssertEqual(parseRosettaStatus("Rosetta: not supported"), "notSupported")
+    }
+
+    func testParseRosettaStatusGarbageIsUnknown() {
+        XCTAssertEqual(parseRosettaStatus("nonsense output"), "unknown")
+    }
+
+    // MARK: - shellQuote
+
+    func testShellQuoteEscapesEmbeddedSingleQuote() {
+        XCTAssertEqual(shellQuote("it's"), "'it'\\''s'")
+    }
+
+    // MARK: - adminInstallScript
+
+    func testAdminInstallScriptContainsCpCodesignAndEntitlements() {
+        let script = adminInstallScript(umbra: "/bundle/umbra", umbrad: "/bundle/umbrad", entitlements: "/bundle/vz.entitlements")
+        XCTAssertTrue(script.contains("cp"))
+        XCTAssertTrue(script.contains("codesign"))
+        XCTAssertTrue(script.contains("/bundle/vz.entitlements"))
+        XCTAssertTrue(script.contains("with administrator privileges"))
+    }
 }
