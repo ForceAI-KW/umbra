@@ -175,6 +175,68 @@ func TestBuildCIRunnerSeed(t *testing.T) {
 	}
 }
 
+func TestBuildDockerSeedHasRosetta(t *testing.T) {
+	dir := t.TempDir()
+	m := &registry.Machine{Name: "docker", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20, Image: "ubuntu:noble", IP: "192.168.127.40", Role: registry.ReservedDockerName}
+	iso, err := BuildSeed(m, dir, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := readISOFile(t, iso, "user-data")
+
+	for _, want := range []string{
+		"vz-rosetta",
+		"/mnt/rosetta",
+		"binfmt_misc/register",
+		"/mnt/rosetta/rosetta",
+		`\x7fELF`,
+		"OCF",
+		"printf",
+		// docker profile must still be present alongside the rosetta lines.
+		"get.docker.com",
+		"tcp://0.0.0.0:2375",
+	} {
+		if !strings.Contains(ud, want) {
+			t.Fatalf("docker user-data missing %q:\n%s", want, ud)
+		}
+	}
+	if strings.Contains(ud, "echo -e") {
+		t.Fatalf("docker user-data uses echo -e instead of printf for binfmt registration:\n%s", ud)
+	}
+	if n := strings.Count(ud, "runcmd:"); n != 1 {
+		t.Fatalf("expected exactly one runcmd: key, got %d:\n%s", n, ud)
+	}
+
+	// ci-runner role also gets the rosetta mount + binfmt.
+	dirCI := t.TempDir()
+	mCI := &registry.Machine{Name: "fwb-ci3", CPUs: 4, MemoryMiB: 8192, DiskGiB: 60, Image: "ubuntu:noble", IP: "192.168.127.41", Role: registry.RoleCIRunner}
+	isoCI, err := BuildSeed(mCI, dirCI, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	udCI := readISOFile(t, isoCI, "user-data")
+	for _, want := range []string{"vz-rosetta", "/mnt/rosetta", "binfmt_misc/register"} {
+		if !strings.Contains(udCI, want) {
+			t.Fatalf("ci-runner user-data missing %q:\n%s", want, udCI)
+		}
+	}
+	if n := strings.Count(udCI, "runcmd:"); n != 1 {
+		t.Fatalf("expected exactly one runcmd: key, got %d:\n%s", n, udCI)
+	}
+
+	// A normal (no-role) machine gets neither the rosetta mount nor binfmt.
+	dirPlain := t.TempDir()
+	mPlain := &registry.Machine{Name: "t6", CPUs: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu:noble", IP: "192.168.127.42"}
+	isoPlain, err := BuildSeed(mPlain, dirPlain, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	udPlain := readISOFile(t, isoPlain, "user-data")
+	if strings.Contains(udPlain, "vz-rosetta") || strings.Contains(udPlain, "binfmt_misc") {
+		t.Fatalf("plain machine's user-data unexpectedly contains rosetta provisioning:\n%s", udPlain)
+	}
+}
+
 func readISOFile(t *testing.T, isoPath, name string) string {
 	t.Helper()
 	f, err := os.Open(isoPath)
