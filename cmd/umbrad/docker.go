@@ -42,6 +42,10 @@ type dockerController struct {
 	daemonCtx context.Context
 	bridgeWG  *sync.WaitGroup
 
+	// opMu serializes Install/Start/Stop/Uninstall as whole operations so a
+	// Stop can't complete mid-Start (which would leave a live, unregistered
+	// bridge). mu guards only the bridge pointer for quick reads (Status).
+	opMu   sync.Mutex
 	mu     sync.Mutex
 	bridge *dockerbridge.Bridge
 }
@@ -84,6 +88,8 @@ func (d *dockerController) sockPath() string { return filepath.Join(paths.Run(),
 // provision closure every other machine uses — cloudinit.BuildSeed already
 // branches on Role=="docker" to inject the dockerd cloud-init profile.
 func (d *dockerController) Install(ctx context.Context) (api.MachineView, error) {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
 	if m, err := d.reg.Load(registry.ReservedDockerName); err == nil {
 		return d.view(m), nil
 	}
@@ -115,6 +121,8 @@ func (d *dockerController) Install(ctx context.Context) (api.MachineView, error)
 // docker context (matching Colima's "reassert context on every start"
 // behavior — research §3).
 func (d *dockerController) Start(ctx context.Context) (api.MachineView, error) {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
 	m, err := d.reg.Load(registry.ReservedDockerName)
 	if err != nil {
 		return api.MachineView{}, fmt.Errorf("docker VM not installed — run `umbra docker install` first: %w", err)
@@ -166,6 +174,13 @@ func (d *dockerController) Start(ctx context.Context) (api.MachineView, error) {
 // Stop stops the docker VM and closes the socket bridge. The docker CLI
 // context is left registered — only Uninstall removes it.
 func (d *dockerController) Stop(ctx context.Context) error {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	return d.stopLocked(ctx)
+}
+
+// stopLocked is the Stop body; callers must already hold d.opMu.
+func (d *dockerController) stopLocked(ctx context.Context) error {
 	if err := d.mgr.Stop(ctx, registry.ReservedDockerName); err != nil {
 		return err
 	}
@@ -197,7 +212,9 @@ func (d *dockerController) Status(ctx context.Context) api.DockerStatus {
 // docker CLI context, then deletes the machine (which removes its dir, incl.
 // disk image and seed ISO).
 func (d *dockerController) Uninstall(ctx context.Context) error {
-	if err := d.Stop(ctx); err != nil {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	if err := d.stopLocked(ctx); err != nil {
 		return err
 	}
 	if err := dockerctx.Remove(); err != nil {
