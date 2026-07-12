@@ -37,7 +37,10 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	reg := registry.New(paths.Machines())
-	mgr := vm.NewManager(reg, paths.Machines())
+	// TODO(T8): construct the shared netstack.Stack + netstack.Resolver here
+	// (install /etc/resolver, wire DialContextTCP readiness) and pass both
+	// instead of nil.
+	mgr := vm.NewManager(reg, paths.Machines(), nil, nil)
 
 	provision := func(ctx context.Context, m *registry.Machine) error {
 		rawBase, err := image.Ensure(ctx, paths.Images(), m.Image)

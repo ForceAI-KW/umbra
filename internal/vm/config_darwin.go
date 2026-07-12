@@ -5,7 +5,7 @@ package vm
 import (
 	"errors"
 	"fmt"
-	"net"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -39,9 +39,10 @@ func (r *realVZ) State() vzState {
 
 // launchVZ builds the configuration and starts the VM. Every vz call is
 // inside guarded() — a cgo panic marks this VM crashed, not the daemon (P1).
-func launchVZ(m *registry.Machine, machinesDir string) (vzHandle, func(), error) {
+func launchVZ(m *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error) {
 	mdir := filepath.Join(machinesDir, m.Name)
 	var handle *realVZ
+	var attachCleanup func() error
 	err := guarded("launch", func() error {
 		bootLoader, err := efiBootLoader(mdir)
 		if err != nil {
@@ -72,24 +73,17 @@ func launchVZ(m *registry.Machine, machinesDir string) (vzHandle, func(), error)
 		}
 		cfg.SetStorageDevicesVirtualMachineConfiguration(storages)
 
-		// network: NAT with the machine's persistent MAC (IP found via dhcpd_leases)
-		natAtt, err := vz.NewNATNetworkDeviceAttachment()
+		// network: attach directly to the embedded netstack via an
+		// AF_UNIX/SOCK_DGRAM socketpair (M2) — replaces M1's kernel NAT
+		// device. attachCleanup must run exactly once even if a later step
+		// in this closure fails, so it's captured before any error can
+		// short-circuit the function (handled in the err != nil branch
+		// below).
+		netCfg, cleanup, err := st.Attach(m.MAC)
 		if err != nil {
 			return err
 		}
-		netCfg, err := vz.NewVirtioNetworkDeviceConfiguration(natAtt)
-		if err != nil {
-			return err
-		}
-		hw, err := net.ParseMAC(m.MAC)
-		if err != nil {
-			return err
-		}
-		mac, err := vz.NewMACAddress(hw)
-		if err != nil {
-			return err
-		}
-		netCfg.SetMACAddress(mac)
+		attachCleanup = cleanup
 		cfg.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{netCfg})
 
 		// virtiofs: share $HOME as tag "home" (mounted at /mnt/mac by cloud-init)
@@ -147,9 +141,23 @@ func launchVZ(m *registry.Machine, machinesDir string) (vzHandle, func(), error)
 		return nil
 	})
 	if err != nil {
+		// attachCleanup may be set even though launch ultimately failed
+		// (e.g. a later step errored, or guarded() caught a panic) — the
+		// netstack docs require it be invoked exactly once regardless, or
+		// the AcceptVfkit goroutine and both socket fds leak.
+		if attachCleanup != nil {
+			if cerr := attachCleanup(); cerr != nil {
+				log.Printf("vm: netstack detach %s after failed launch: %v", m.Name, cerr)
+			}
+		}
 		return nil, nil, err
 	}
-	return handle, func() {}, nil
+	stopFn := func() {
+		if cerr := attachCleanup(); cerr != nil {
+			log.Printf("vm: netstack detach %s: %v", m.Name, cerr)
+		}
+	}
+	return handle, stopFn, nil
 }
 
 func efiBootLoader(mdir string) (vz.BootLoader, error) {

@@ -63,7 +63,7 @@ func TestBootShellStopCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr := vm.NewManager(reg, machinesDir)
+	mgr := vm.NewManager(reg, machinesDir, nil, nil)
 	if err := mgr.Start(ctx, m.Name); err != nil {
 		t.Fatal(err)
 	}

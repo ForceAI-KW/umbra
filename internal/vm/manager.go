@@ -7,8 +7,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ForceAI-KW/umbra/internal/netstack"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 )
+
+// netStack is a package-local alias for *netstack.Stack. Spelling the
+// launchFn/Manager seam in terms of this alias (rather than the qualified
+// "*netstack.Stack") lets manager_test.go reference the exact same type
+// without an import of its own — both files live in package vm, so
+// unqualified package-level identifiers are visible across them.
+type netStack = *netstack.Stack
+
+// nameSetter is the minimal seam Manager needs against the DNS resolver;
+// it is satisfied by *netstack.Resolver. Declaring it locally (rather than
+// depending on the concrete type) keeps netstack's Resolver out of
+// manager_test.go's fakes.
+type nameSetter interface {
+	Set(name, ip string)
+	Remove(name string)
+}
 
 type State string
 
@@ -40,26 +57,33 @@ type instance struct {
 	state  State
 	ip     string
 	handle vzHandle
-	// stopFn is reserved for future resource cleanup (e.g. releasing run
-	// loop resources on darwin); it is currently always a no-op.
+	// stopFn tears down this VM's netstack attachment (cancels the
+	// AcceptVfkit goroutine, closes the gvisor-tap-vsock socket end) once the
+	// stop is confirmed.
 	stopFn func()
 }
 
 type Manager struct {
 	reg         *registry.Registry
 	machinesDir string
+	net         netStack
+	dns         nameSetter
 	mu          sync.Mutex
 	instances   map[string]*instance
 }
 
-// launchFn launches a vz VM for m, returning the handle and a cleanup
-// closure. It is nil on platforms without a vz build (config_darwin.go sets
-// it via init() on darwin/arm64). Tests override it directly (save/restore)
-// to inject fakes.
-var launchFn func(m *registry.Machine, machinesDir string) (vzHandle, func(), error)
+// launchFn launches a vz VM for m against netstack st, returning the handle
+// and a cleanup closure. It is nil on platforms without a vz build
+// (config_darwin.go sets it via init() on darwin/arm64). Tests override it
+// directly (save/restore) to inject fakes.
+var launchFn func(m *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error)
 
-func NewManager(reg *registry.Registry, machinesDir string) *Manager {
-	return &Manager{reg: reg, machinesDir: machinesDir, instances: map[string]*instance{}}
+// NewManager wires reg/machinesDir plus the shared netstack and DNS
+// resolver: net is threaded through to launchFn so machines attach via
+// socketpair instead of kernel NAT; dns is nil-safe (Set/Remove are skipped)
+// so callers that don't care about DNS can pass nil.
+func NewManager(reg *registry.Registry, machinesDir string, net netStack, dns nameSetter) *Manager {
+	return &Manager{reg: reg, machinesDir: machinesDir, net: net, dns: dns, instances: map[string]*instance{}}
 }
 
 func (m *Manager) inst(name string) *instance {
@@ -124,7 +148,7 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 		return err
 	}
 
-	h, stopFn, err := launchFn(cfg, m.machinesDir) // darwin-only; guarded inside
+	h, stopFn, err := launchFn(cfg, m.machinesDir, m.net) // darwin-only; guarded inside
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -136,6 +160,11 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 	i.handle, i.stopFn = h, stopFn
 	i.state = StateRunning
+	if m.dns != nil {
+		// cfg.IP is set by the provision step (Task 8); until then this
+		// registers an empty IP, which Resolver.Set ignores (non-IPv4 guard).
+		m.dns.Set(name, cfg.IP)
+	}
 	return nil
 }
 
@@ -197,6 +226,9 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	i.ip = ""
 	i.handle = nil
 	i.stopFn = nil
+	if m.dns != nil {
+		m.dns.Remove(name)
+	}
 	return nil
 }
 
