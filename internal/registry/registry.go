@@ -14,7 +14,11 @@ import (
 var ErrNotFound = errors.New("machine not found")
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
+const ReservedDockerName = "docker"
+
 func ValidName(name string) bool { return nameRe.MatchString(name) }
+
+func IsReserved(name string) bool { return name == ReservedDockerName }
 
 type Machine struct {
 	Name      string    `json:"name"`
@@ -24,6 +28,7 @@ type Machine struct {
 	Image     string    `json:"image"`
 	MAC       string    `json:"mac"`
 	IP        string    `json:"ip,omitempty"`
+	Role      string    `json:"role,omitempty"`
 	Autostart bool      `json:"autostart"`
 	HostBuild string    `json:"host_build"`
 	CreatedAt time.Time `json:"created_at"`
