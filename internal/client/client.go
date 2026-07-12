@@ -184,3 +184,15 @@ func (c *Client) DockerStatus(ctx context.Context) (*DockerStatus, error) {
 func (c *Client) DockerUninstall(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/docker/uninstall", nil, nil)
 }
+
+// Rosetta returns the host's Rosetta-for-Linux availability:
+// "installed" / "notInstalled" / "notSupported".
+func (c *Client) Rosetta(ctx context.Context) (string, error) {
+	var out struct {
+		Available string `json:"available"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/rosetta", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Available, nil
+}

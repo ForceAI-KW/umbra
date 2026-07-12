@@ -68,16 +68,21 @@ type DockerStatus struct {
 }
 
 type Server struct {
-	reg    *registry.Registry
-	lc     Lifecycle
-	prov   Provisioner
-	ready  func(ctx context.Context, m *registry.Machine) (string, error)
-	fwd    Forwarder
-	docker Docker
+	reg     *registry.Registry
+	lc      Lifecycle
+	prov    Provisioner
+	ready   func(ctx context.Context, m *registry.Machine) (string, error)
+	fwd     Forwarder
+	docker  Docker
+	rosetta func() string
 }
 
-func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready func(ctx context.Context, m *registry.Machine) (string, error), fwd Forwarder, docker Docker) *Server {
-	return &Server{reg: reg, lc: lc, prov: prov, ready: ready, fwd: fwd, docker: docker}
+// NewServer's rosetta param reports host Rosetta-for-Linux availability as
+// "installed" / "notInstalled" / "notSupported" (vm.RosettaAvailability in
+// production; a stub in tests) — live-read on every GET /v1/rosetta call,
+// never cached, so callers see the current state (PITFALLS P5).
+func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready func(ctx context.Context, m *registry.Machine) (string, error), fwd Forwarder, docker Docker, rosetta func() string) *Server {
+	return &Server{reg: reg, lc: lc, prov: prov, ready: ready, fwd: fwd, docker: docker, rosetta: rosetta}
 }
 
 type MachineView struct {
@@ -434,6 +439,10 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("GET /v1/rosetta", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"available": s.rosetta()})
 	})
 
 	return mux
