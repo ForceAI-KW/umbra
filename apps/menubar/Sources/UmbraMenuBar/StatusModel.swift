@@ -146,9 +146,6 @@ final class StatusModel: ObservableObject {
         await refresh()
     }
 
-    /// Re-registers the LaunchAgent against the standard install path —
-    /// a Settings-pane "reinstall daemon" action for after a rebuild
-    /// replaces `/usr/local/bin/umbrad` (docs/research/full-app-and-dmg.md §6).
     /// Re-registers the LaunchAgent against the standard install path (already
     /// on PATH at `/usr/local/bin/umbrad`) — the Settings → Daemon "Install"
     /// button, as distinct from `installDaemon()`'s bundle-copy onboarding flow.

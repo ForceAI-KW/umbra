@@ -165,7 +165,7 @@ func resolverFileContent() -> String {
 /// `adminInstallShellCommand`'s structure; `/etc/resolver` is root-owned so
 /// this always runs under the admin-privileges AppleScript below.
 func installResolverShellCommand() -> String {
-    "mkdir -p /etc/resolver && printf \(shellQuote(resolverFileContent())) | tee /etc/resolver/umbra.local > /dev/null"
+    "mkdir -p /etc/resolver && printf '%s' \(shellQuote(resolverFileContent())) | tee /etc/resolver/umbra.local > /dev/null"
 }
 
 /// AppleScript that requests one administrator-privileges elevation to run
