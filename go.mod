@@ -11,6 +11,7 @@ require (
 require (
 	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/containers/gvisor-tap-vsock v0.8.9
+	github.com/miekg/dns v1.1.72
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.47.0
 )
@@ -24,7 +25,6 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
 	github.com/pierrec/lz4/v4 v4.1.14 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
