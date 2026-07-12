@@ -7,12 +7,44 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/Code-Hex/vz/v3"
 
 	"github.com/ForceAI-KW/umbra/internal/registry"
 )
+
+// needsRosetta reports whether m's role requires amd64 support via a
+// Rosetta directory share — currently the reserved docker machine and CI
+// runners (docs/research/rosetta-amd64.md §3).
+func needsRosetta(m *registry.Machine) bool {
+	return m.Role == registry.ReservedDockerName || m.Role == registry.RoleCIRunner
+}
+
+// checkHostBuildDrift logs (does not fail) when the host's macOS build has
+// changed since m was created (PITFALLS P5: Rosetta can break across macOS
+// point updates). It intentionally does NOT thread a *registry.Registry
+// into launchVZ to persist the new build — RosettaAvailability() /
+// attachRosetta() are live reads on every boot (never cached), so a stale
+// m.HostBuild doesn't cause incorrect behavior, only a slightly stale log
+// signal. Keeping m.HostBuild current is a nice-to-have deferred to a
+// future pass rather than threading registry access through the launch
+// path (see task-1 brief + docs/research/rosetta-amd64.md §4).
+func checkHostBuildDrift(m *registry.Machine) {
+	if m.HostBuild == "" {
+		return
+	}
+	out, err := exec.Command("/usr/bin/sw_vers", "-buildVersion").Output()
+	if err != nil {
+		return
+	}
+	current := strings.TrimSpace(string(out))
+	if current != "" && current != m.HostBuild {
+		log.Printf("vm: host macOS build changed (%s -> %s) since %s was created — revalidating rosetta", m.HostBuild, current, m.Name)
+	}
+}
 
 // init wires the manager's testable launchFn seam to the real vz launch on
 // darwin/arm64; on other platforms launchFn stays nil and Start() errors.
@@ -44,6 +76,8 @@ func launchVZ(m *registry.Machine, machinesDir string, st netStack) (vzHandle, f
 	var handle *realVZ
 	var attachCleanup func() error
 	err := guarded("launch", func() error {
+		checkHostBuildDrift(m)
+
 		bootLoader, err := efiBootLoader(mdir)
 		if err != nil {
 			return err
@@ -104,7 +138,21 @@ func launchVZ(m *registry.Machine, machinesDir string, st netStack) (vzHandle, f
 			return err
 		}
 		fsCfg.SetDirectoryShare(single)
-		cfg.SetDirectorySharingDevicesVirtualMachineConfiguration([]vz.DirectorySharingDeviceConfiguration{fsCfg})
+		shares := []vz.DirectorySharingDeviceConfiguration{fsCfg}
+
+		// virtiofs: Rosetta share (M6) — enables `docker run --platform
+		// linux/amd64` on machines whose role needs amd64 support. A
+		// Rosetta failure is non-fatal: log and boot without amd64
+		// support rather than take down a VM that may not even need it
+		// (mirrors lima-vm/lima's failure mode, docs/research/rosetta-amd64.md §3).
+		if needsRosetta(m) {
+			if rosettaCfg, err := attachRosetta(); err != nil {
+				log.Printf("vm: rosetta unavailable for %s: %v (booting without amd64 support)", m.Name, err)
+			} else {
+				shares = append(shares, rosettaCfg)
+			}
+		}
+		cfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
 
 		// serial console → log file
 		serialAtt, err := vz.NewFileSerialPortAttachment(filepath.Join(mdir, "console.log"), false)
