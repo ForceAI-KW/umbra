@@ -120,6 +120,19 @@ struct MenuBarView: View {
                     }
                 }
                 .buttonStyle(.borderless)
+            } else {
+                Button {
+                    Task { await model.installDocker() }
+                } label: {
+                    if model.busy.contains("docker") {
+                        ProgressView().scaleEffect(0.5)
+                    } else {
+                        Text("Install").font(.caption)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.busy.contains("docker") || model.cliMissing)
             }
         }
         .padding()

@@ -121,13 +121,29 @@ final class StatusModel: ObservableObject {
 
     /// Creates a machine (then starts it, per `CLI.create`), marking it busy
     /// for the duration, mirroring `toggleMachine`'s busy/refresh pattern.
-    func createMachine(_ name: String, cpus: Int, memoryGiB: Int, diskGiB: Int) async {
+    func createMachine(_ name: String, cpus: Int, memoryGiB: Int, diskGiB: Int, role: String? = nil) async {
         guard let cli else { return }
         busy.insert(name)
         actionError = nil
         defer { busy.remove(name) }
         do {
-            try await cli.create(name, cpus: cpus, memoryGiB: memoryGiB, diskGiB: diskGiB)
+            try await cli.create(name, cpus: cpus, memoryGiB: memoryGiB, diskGiB: diskGiB, role: role)
+        } catch {
+            actionError = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    /// Installs + starts the reserved docker VM (`umbra docker install` then
+    /// `start`). Marks "docker" busy so the Docker controls show a spinner;
+    /// surfaces failures via `actionError`. Long-running on first install.
+    func installDocker() async {
+        guard let cli else { return }
+        busy.insert("docker")
+        actionError = nil
+        defer { busy.remove("docker") }
+        do {
+            try await cli.dockerInstall()
         } catch {
             actionError = error.localizedDescription
         }

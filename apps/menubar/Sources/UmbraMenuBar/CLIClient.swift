@@ -101,9 +101,15 @@ func runUmbra(_ args: [String], cliPath: String) async throws -> Data {
 }
 
 /// Pure helper: builds the arg array for `umbra create`. Split out so tests
-/// can assert the exact CLI invocation without shelling out.
-func createArgs(name: String, cpus: Int, memoryGiB: Int, diskGiB: Int) -> [String] {
-    ["create", name, "--cpus", String(cpus), "--memory-gib", String(memoryGiB), "--disk-gib", String(diskGiB)]
+/// can assert the exact CLI invocation without shelling out. A non-empty
+/// `role` (e.g. "ci-runner") appends `--role <role>`; nil/empty creates a
+/// plain machine (the CLI's default role).
+func createArgs(name: String, cpus: Int, memoryGiB: Int, diskGiB: Int, role: String? = nil) -> [String] {
+    var args = ["create", name, "--cpus", String(cpus), "--memory-gib", String(memoryGiB), "--disk-gib", String(diskGiB)]
+    if let role, !role.isEmpty {
+        args += ["--role", role]
+    }
+    return args
 }
 
 /// Pure helper: parses `umbra rosetta status`'s human-readable stdout
@@ -188,10 +194,18 @@ struct CLI {
         _ = try await runUmbra(["docker", "stop"], cliPath: path)
     }
 
+    /// Provisions the reserved docker VM (get.docker.com via cloud-init) and
+    /// boots it — the `umbra docker install` + `docker start` the CLI does in
+    /// two steps. Long-running (first run downloads the Ubuntu image).
+    func dockerInstall() async throws {
+        _ = try await runUmbra(["docker", "install"], cliPath: path)
+        _ = try await runUmbra(["docker", "start"], cliPath: path)
+    }
+
     /// Creates a machine, then starts it — `umbra create` alone only
     /// registers it (`cmd/umbra/create.go`), the daemon leaves it stopped.
-    func create(_ name: String, cpus: Int, memoryGiB: Int, diskGiB: Int) async throws {
-        _ = try await runUmbra(createArgs(name: name, cpus: cpus, memoryGiB: memoryGiB, diskGiB: diskGiB), cliPath: path)
+    func create(_ name: String, cpus: Int, memoryGiB: Int, diskGiB: Int, role: String? = nil) async throws {
+        _ = try await runUmbra(createArgs(name: name, cpus: cpus, memoryGiB: memoryGiB, diskGiB: diskGiB, role: role), cliPath: path)
         _ = try await runUmbra(["start", name], cliPath: path)
     }
 
