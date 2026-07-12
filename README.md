@@ -14,7 +14,7 @@ via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
 | M1 | Core VM lifecycle: Ubuntu machines, shell, VirtioFS home share, verified stop | ✅ Done — warm boot to SSH-ready in ~7s |
 | M2 | Networking: gvisor-tap-vsock NAT (VPN-safe), `*.umbra.local` DNS, port forwarding | ✅ Done |
 | M3 | Docker: dedicated dockerd VM + `umbra` docker context | ✅ Done |
-| M4 | launchd autostart + CI-runner machine cutover | Not started |
+| M4 | launchd autostart + CI-runner cutover kit (cutover is human-gated) | ✅ Done (kit built; cutover is Ahmad's runbook) |
 | M5 | SwiftUI menu bar app | Not started |
 | M6 | Rosetta (amd64) + OSS release polish | Not started |
 
@@ -144,7 +144,7 @@ in the build step. See
 
 ## Design notes
 
-Umbra's lifecycle code is engineered against 12 documented production
+Umbra's lifecycle code is engineered against 24 documented production
 failures of the macOS VM ecosystem (vz cgo panics, VirtioFS desync,
 gvproxy sleep/wake spins, Rosetta breakage, DHCP DUID traps, …) mined from
 Lima/Colima/apple-container/vfkit issue trackers before the first line of
@@ -162,7 +162,7 @@ code — see [docs/PITFALLS-EXTERNAL.md](docs/PITFALLS-EXTERNAL.md). Highlights:
 
 ## Docs
 
-- [docs/PITFALLS-EXTERNAL.md](docs/PITFALLS-EXTERNAL.md) — 12 verified production pitfalls (vz / gvisor-tap-vsock / VirtioFS / Rosetta)
+- [docs/PITFALLS-EXTERNAL.md](docs/PITFALLS-EXTERNAL.md) — 24 production pitfalls (vz / gvisor-tap-vsock / VirtioFS / Rosetta / docker / launchd+CI)
 - [docs/superpowers/specs/2026-07-11-umbra-design.md](docs/superpowers/specs/2026-07-11-umbra-design.md) — design spec
 - [docs/superpowers/plans/2026-07-11-m1-core-vm-lifecycle.md](docs/superpowers/plans/2026-07-11-m1-core-vm-lifecycle.md) — M1 implementation plan (spec-driven development, TDD)
 - [docs/runbooks/entitlements-and-codesigning.md](docs/runbooks/entitlements-and-codesigning.md) — entitlements & codesigning runbook
