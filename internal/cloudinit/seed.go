@@ -3,12 +3,15 @@ package cloudinit
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kdomanski/iso9660"
 
+	"github.com/ForceAI-KW/umbra/internal/netstack"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 )
 
@@ -28,42 +31,54 @@ growpart:
 mounts:
   - [home, /mnt/mac, virtiofs, "defaults,nofail", "0", "0"]
 ssh_pwauth: false
-`
+%s`
 
 const metaDataTmpl = `instance-id: umbra-%s
 local-hostname: %s
 `
 
-// networkConfig forces the DHCP client identifier to be the interface MAC
-// (netplan dhcp-identifier: mac). Without it, Ubuntu's systemd-networkd
-// sends an RFC-4361 DUID, macOS bootpd records that DUID as hw_address
-// (type ff), and vmnet's MAC-based lease lookup can never find the guest
-// (verified live: itest VM leased as "ff,f1:f5:dd:..."). Same fix Lima uses.
-const networkConfig = `version: 2
+// networkConfigTmpl assigns the static IP the daemon allocated via ipalloc
+// before boot. Static addressing sidesteps DHCP (and the Ubuntu
+// DUID/bootpd trap) entirely: no DHCP client, no lease file, no
+// dhcp-identifier dance.
+const networkConfigTmpl = `version: 2
 ethernets:
   all:
-    match:
-      name: "en*"
-    dhcp4: true
-    dhcp-identifier: mac
+    match: { name: "en*" }
+    dhcp4: false
+    addresses: [ "%s/24" ]
+    routes: [ { to: "default", via: "%s" } ]
+    nameservers: { addresses: [ "%s" ] }
 `
 
 // BuildSeed writes <machineDir>/seed.iso. sshPub must be a single-line
 // authorized_keys entry (as produced by sshkey.Ensure) — it is interpolated
 // into YAML, so anything else is rejected to keep first-boot config
-// injection-proof.
-func BuildSeed(m *registry.Machine, machineDir, sshPub string) (string, error) {
+// injection-proof. m.IP must already be set (caller allocates it via
+// ipalloc before calling BuildSeed). hosts is name->IP and is appended to
+// the guest's /etc/hosts for guest-to-guest resolution; empty values are
+// skipped.
+func BuildSeed(m *registry.Machine, machineDir, sshPub string, hosts map[string]string) (string, error) {
 	if strings.ContainsAny(sshPub, "\n\r") || !strings.HasPrefix(sshPub, "ssh-") {
 		return "", fmt.Errorf("sshPub must be a single-line authorized_keys entry starting with \"ssh-\"")
 	}
+	if m.IP == "" {
+		return "", fmt.Errorf("machine %q has no IP assigned", m.Name)
+	}
+	ip := net.ParseIP(m.IP)
+	if ip == nil || ip.To4() == nil {
+		return "", fmt.Errorf("machine %q has invalid IPv4 address %q", m.Name, m.IP)
+	}
+
 	w, err := iso9660.NewWriter()
 	if err != nil {
 		return "", err
 	}
 	defer w.Cleanup()
 
-	userData := fmt.Sprintf(userDataTmpl, sshPub)
+	userData := fmt.Sprintf(userDataTmpl, sshPub, hostsRuncmd(hosts))
 	metaData := fmt.Sprintf(metaDataTmpl, m.Name, m.Name)
+	networkConfig := fmt.Sprintf(networkConfigTmpl, m.IP, netstack.Gateway, netstack.Gateway)
 	if err := w.AddFile(strings.NewReader(userData), "user-data"); err != nil {
 		return "", err
 	}
@@ -88,4 +103,32 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string) (string, error) {
 		return "", err
 	}
 	return isoPath, os.Rename(isoPath+".tmp", isoPath)
+}
+
+// hostsRuncmd renders a cloud-config runcmd block that appends one line per
+// hosts entry to the guest's /etc/hosts, for guest-to-guest name
+// resolution. Entries with an empty IP are skipped. Returns "" (no runcmd
+// section) when hosts is empty. Not idempotent across reboots — fine for
+// first boot, per M2 scope.
+func hostsRuncmd(hosts map[string]string) string {
+	names := make([]string, 0, len(hosts))
+	for name, ip := range hosts {
+		if ip == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("runcmd:\n")
+	for _, name := range names {
+		// printf, not `echo -e`: cloud-init runs runcmd via dash, whose echo
+		// prints "-e" literally and doesn't expand \t (verified in-guest).
+		fmt.Fprintf(&b, "  - printf '%%s\\t%%s.umbra.local %%s\\n' '%s' '%s' '%s' >> /etc/hosts\n", hosts[name], name, name)
+	}
+	return b.String()
 }

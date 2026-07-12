@@ -27,7 +27,7 @@ func WaitReady(ctx context.Context, lookupIP func() (string, bool, error), dial 
 	var ip string
 	for {
 		if time.Now().After(deadline) {
-			return "", &stageError{Stage: "ip", Detail: fmt.Sprintf("no DHCP lease appeared for machine MAC after %s (check /var/db/dhcpd_leases and console.log)", time.Since(start).Round(time.Second))}
+			return "", &stageError{Stage: "ip", Detail: fmt.Sprintf("machine IP not available after %s (check console.log)", time.Since(start).Round(time.Second))}
 		}
 		got, ok, err := lookupIP()
 		if err != nil {

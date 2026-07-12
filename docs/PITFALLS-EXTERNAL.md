@@ -23,6 +23,7 @@ The two highest-relevance findings for Umbra's architecture: **P1** (cgo Handle 
 - **File:** `daemon/vm/virtiofs.go`
 
 ## P3 — gvproxy pegs CPU to 100–1200% after sleep/wake (UDP retry loop)
+> **Addressed (M2):** sleep/wake gap-detector supervisor (`internal/netstack/supervisor.go`) probes running machines after a detected wake; we embed gvisor-tap-vsock in-process and connections self-heal per-connection (no separate gvproxy to spin).
 - **What:** After Mac sleep/wake (often + VPN change), gvisor-tap-vsock UDP reply loop spins forever; only a stack restart recovers.
 - **Where:** https://github.com/containers/gvisor-tap-vsock/issues/584 (also colima#829, colima#1543) — 3 reports
 - **Why:** `pkg/services/forwarder/udp_proxy.go` retries ECONNREFUSED with no backoff after macOS tears down interfaces on wake.
@@ -30,6 +31,7 @@ The two highest-relevance findings for Umbra's architecture: **P1** (cgo Handle 
 - **File:** `daemon/net/lifecycle_sleepwake.go`
 
 ## P4 — Embedded gvproxy DNS misses internal names + SOA/SRV/PTR record types
+> **Addressed (M2):** daemon-authoritative `*.umbra.local` resolver (`internal/netstack/dns.go`, add+remove) for host-side lookups + static `/etc/hosts` for guest-side — we do not rely on gvproxy DNS for machine names.
 - **What:** Fresh VMs can't resolve internal machine/container names (`ping: bad address`); NOERROR-with-zero-answers on SOA/SRV/PTR breaks DNS-probing tools.
 - **Where:** https://github.com/apple/container/issues/856 (also apple/container#1693, lima#4520, gvisor-tap-vsock#612) — 4 reports
 - **Why:** gvproxy's DNS implements a minimal record subset; internal-name registration races VM boot.
@@ -51,6 +53,7 @@ The two highest-relevance findings for Umbra's architecture: **P1** (cgo Handle 
 - **File:** `daemon/vm/boot_readiness.go`
 
 ## P7 — VPN on/off mid-session leaves guests with stale routes; no self-heal
+> **Addressed (M2):** userspace gvisor-tap-vsock NAT dials a fresh host socket per new flow (research §f), so new connections pick up the current route after a VPN change without a daemon-side reset.
 - **What:** Toggling a VPN after VM start breaks guest connectivity (VPN-only and sometimes public hosts) until VM/network restart.
 - **Where:** https://github.com/apple/container/issues/1881 (also lima#2984, colima#392, apple/container#1307) — 4 reports
 - **Why:** NAT stacks cache host route/interface state at attach; VPN rewrites default route + DNS mid-session.
@@ -79,6 +82,7 @@ The two highest-relevance findings for Umbra's architecture: **P1** (cgo Handle 
 - **File:** `daemon/ipc/client_connect.go`
 
 ## P11 — gvproxy hard-exits on ENOBUFS under burst traffic (kills all VM networking)
+> **Addressed (M2):** the pinned gvisor-tap-vsock (v0.8.9) retries ENOBUFS instead of exiting (research §4e); the M2 supervisor additionally surfaces a wedged stack.
 - **What:** Large image pulls / high packet volume → `sendto: no buffer space available` → network stack process exits for every VM.
 - **Where:** https://github.com/containers/gvisor-tap-vsock/issues/367 (also #107) — 3 reports
 - **Why:** Finite unixgram send buffer to the virtio-net backend; ENOBUFS treated as fatal instead of backpressure.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -21,8 +22,11 @@ var shellCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if mv.IP == "" {
-			return fmt.Errorf("machine %q has no IP (state: %s) — start it first", mv.Name, mv.State)
+		// The guest lives on the userspace netstack, which the host can't
+		// route to directly — the daemon forwards a loopback port to guest:22
+		// while the machine runs.
+		if mv.SSHPort == 0 {
+			return fmt.Errorf("machine %q is not reachable (state: %s) — start it first", mv.Name, mv.State)
 		}
 		sshPath, err := exec.LookPath("ssh")
 		if err != nil {
@@ -32,7 +36,8 @@ var shellCmd = &cobra.Command{
 			"-i", filepath.Join(paths.SSH(), "id_ed25519"),
 			"-o", "StrictHostKeyChecking=accept-new",
 			"-o", "UserKnownHostsFile=" + filepath.Join(paths.SSH(), "known_hosts"),
-			"umbra@" + mv.IP,
+			"-p", strconv.Itoa(mv.SSHPort),
+			"umbra@127.0.0.1",
 		}
 		if len(args) > 1 {
 			sshArgs = append(sshArgs, args[1:]...)

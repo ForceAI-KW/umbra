@@ -17,15 +17,40 @@ import (
 	"github.com/ForceAI-KW/umbra/internal/api"
 	"github.com/ForceAI-KW/umbra/internal/cloudinit"
 	"github.com/ForceAI-KW/umbra/internal/image"
+	"github.com/ForceAI-KW/umbra/internal/ipalloc"
+	"github.com/ForceAI-KW/umbra/internal/netstack"
 	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 	"github.com/ForceAI-KW/umbra/internal/sshkey"
 	"github.com/ForceAI-KW/umbra/internal/vm"
-	"github.com/ForceAI-KW/umbra/internal/vmnet"
 )
+
+// forwarderAdapter adapts *netstack.Stack's []netstack.ForwardView return
+// type to api.Forwarder's []api.ForwardView, so internal/api never needs to
+// import internal/netstack.
+type forwarderAdapter struct{ st *netstack.Stack }
+
+func (a forwarderAdapter) Expose(protocol, local, remote string) error {
+	return a.st.Expose(protocol, local, remote)
+}
+func (a forwarderAdapter) Unexpose(protocol, local string) error {
+	return a.st.Unexpose(protocol, local)
+}
+func (a forwarderAdapter) Forwards() ([]api.ForwardView, error) {
+	fs, err := a.st.Forwards()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.ForwardView, len(fs))
+	for i, f := range fs {
+		out[i] = api.ForwardView{Local: f.Local, Remote: f.Remote, Protocol: f.Protocol}
+	}
+	return out, nil
+}
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	slog.SetDefault(logger) // so components using slog.Default() (supervisor) share this handler
 	if err := run(logger); err != nil {
 		logger.Error("umbrad exiting", "err", err)
 		os.Exit(1)
@@ -37,9 +62,39 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	reg := registry.New(paths.Machines())
-	mgr := vm.NewManager(reg, paths.Machines())
+
+	st, err := netstack.New()
+	if err != nil {
+		return err
+	}
+	res, err := netstack.NewResolver()
+	if err != nil {
+		return err
+	}
+	if err := netstack.InstallResolverFile(res.Port()); err != nil {
+		if errors.Is(err, netstack.ErrResolverPermission) {
+			logger.Warn("cannot write /etc/resolver/umbra.local — host-side *.umbra.local lookups won't work (guest /etc/hosts and umbra shell/forward still do); fix with: sudo sh -c 'printf \"nameserver 127.0.0.1\\nport %d\\n\" > /etc/resolver/umbra.local'", "port", res.Port(), "err", err)
+		} else {
+			logger.Warn("failed to install /etc/resolver/umbra.local, continuing without host-side DNS", "err", err)
+		}
+	}
+
+	mgr := vm.NewManager(reg, paths.Machines(), st, res)
 
 	provision := func(ctx context.Context, m *registry.Machine) error {
+		used, err := reg.UsedIPs()
+		if err != nil {
+			return err
+		}
+		ip, err := ipalloc.Allocate(netstack.Subnet, netstack.Gateway, netstack.FirstHost, used)
+		if err != nil {
+			return err
+		}
+		m.IP = ip
+		if err := reg.Save(m); err != nil { // persist before build so a later BuildSeed/reg.List sees it
+			return err
+		}
+
 		rawBase, err := image.Ensure(ctx, paths.Images(), m.Image)
 		if err != nil {
 			return err
@@ -52,15 +107,28 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		_, err = cloudinit.BuildSeed(m, mdir, pub)
+		machines, err := reg.List()
+		if err != nil {
+			return err
+		}
+		hosts := make(map[string]string, len(machines))
+		for _, mc := range machines {
+			hosts[mc.Name] = mc.IP
+		}
+		_, err = cloudinit.BuildSeed(m, mdir, pub, hosts)
 		return err
 	}
 
 	ready := func(ctx context.Context, m *registry.Machine) (string, error) {
 		ip, err := vm.WaitReady(ctx,
-			func() (string, bool, error) { return vmnet.LookupIPFromFile(m.MAC) },
+			func() (string, bool, error) { return m.IP, true, nil }, // IP is known at create time (static addressing); no lease wait
 			func(addr string) error {
-				c, err := net.DialTimeout("tcp", addr, 2*time.Second)
+				// Per-attempt deadline so a booted-then-silent guest can't
+				// consume the whole WaitReady budget on one blocked dial —
+				// WaitReady's 90s bound (P6) only checks between attempts.
+				dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				defer cancel()
+				c, err := st.DialContextTCP(dialCtx, addr)
 				if err == nil {
 					c.Close()
 				}
@@ -74,7 +142,7 @@ func run(logger *slog.Logger) error {
 		return ip, nil
 	}
 
-	srv := api.NewServer(reg, mgr, provision, ready)
+	srv := api.NewServer(reg, mgr, provision, ready, forwarderAdapter{st: st})
 
 	sock := paths.APISocket()
 	_ = os.Remove(sock) // stale socket from a previous run
@@ -125,6 +193,34 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
+	// Supervisor watches for a sleep/wake gap and probes running machines'
+	// SSH health afterward; gvisor connections self-heal per-connection
+	// (P3/P11, no rebuild API), so this only detects + logs loudly, best
+	// effort and non-fatal. See internal/netstack/supervisor.go.
+	var supervisorWG sync.WaitGroup
+	supervisorWG.Add(1)
+	go func() {
+		defer supervisorWG.Done()
+		probe := func(ctx context.Context) []string {
+			var unhealthy []string
+			for _, info := range mgr.List() {
+				if info.State != vm.StateRunning || info.IP == "" {
+					continue
+				}
+				dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				c, err := st.DialContextTCP(dialCtx, net.JoinHostPort(info.IP, "22"))
+				cancel()
+				if err != nil {
+					unhealthy = append(unhealthy, info.Name)
+					continue
+				}
+				c.Close()
+			}
+			return unhealthy
+		}
+		netstack.NewSupervisor(probe).Run(daemonCtx)
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	select {
@@ -136,12 +232,19 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutting down", "signal", s.String())
 	}
 
-	daemonCancel()     // stop/short-circuit any in-flight or pending autostarts first
-	autostartWG.Wait() // let them exit before StopAll touches the same instances
+	daemonCancel()      // stop/short-circuit any in-flight or pending autostarts (and the supervisor) first
+	autostartWG.Wait()  // let them exit before StopAll touches the same instances
+	supervisorWG.Wait() // let the supervisor's Run return before StopAll touches the same instances
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
 	mgr.StopAll(shutdownCtx) // graceful → hard per VM (P8)
+	if err := res.Shutdown(); err != nil {
+		logger.Warn("dns resolver shutdown", "err", err)
+	}
+	if err := netstack.UninstallResolverFile(); err != nil {
+		logger.Warn("uninstall /etc/resolver/umbra.local", "err", err)
+	}
 	_ = httpSrv.Shutdown(shutdownCtx)
 	return nil
 }

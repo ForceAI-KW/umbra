@@ -24,9 +24,10 @@ type Client struct {
 
 type MachineView struct {
 	registry.Machine
-	State  vm.State `json:"state"`
-	IP     string   `json:"ip,omitempty"`
-	Zombie bool     `json:"zombie,omitempty"`
+	State   vm.State `json:"state"`
+	IP      string   `json:"ip,omitempty"`
+	SSHPort int      `json:"ssh_port,omitempty"`
+	Zombie  bool     `json:"zombie,omitempty"`
 }
 
 type CreateRequest struct {
@@ -36,6 +37,20 @@ type CreateRequest struct {
 	DiskGiB   uint64 `json:"disk_gib"`
 	Image     string `json:"image"`
 	Autostart bool   `json:"autostart"`
+}
+
+// ForwardView mirrors api.ForwardView; kept as its own type here so the CLI
+// doesn't import internal/api.
+type ForwardView struct {
+	Local    string `json:"local"`
+	Remote   string `json:"remote"`
+	Protocol string `json:"protocol"`
+}
+
+type forwardRequest struct {
+	LocalPort int    `json:"local_port"`
+	GuestPort int    `json:"guest_port"`
+	Protocol  string `json:"protocol"`
 }
 
 func New(socketPath string) *Client {
@@ -122,4 +137,20 @@ func (c *Client) ListMachines(ctx context.Context) ([]MachineView, error) {
 func (c *Client) GetMachine(ctx context.Context, name string) (*MachineView, error) {
 	var mv MachineView
 	return &mv, c.do(ctx, http.MethodGet, "/v1/machines/"+name, nil, &mv)
+}
+func (c *Client) AddForward(ctx context.Context, name string, localPort, guestPort int, protocol string) (*ForwardView, error) {
+	var fv ForwardView
+	req := forwardRequest{LocalPort: localPort, GuestPort: guestPort, Protocol: protocol}
+	return &fv, c.do(ctx, http.MethodPost, "/v1/machines/"+name+"/forwards", req, &fv)
+}
+func (c *Client) ListForwards(ctx context.Context, name string) ([]ForwardView, error) {
+	var out []ForwardView
+	return out, c.do(ctx, http.MethodGet, "/v1/machines/"+name+"/forwards", nil, &out)
+}
+func (c *Client) RemoveForward(ctx context.Context, name string, localPort int, protocol string) error {
+	path := fmt.Sprintf("/v1/machines/%s/forwards/%d", name, localPort)
+	if protocol == "udp" {
+		path += "?protocol=udp"
+	}
+	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }

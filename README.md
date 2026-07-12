@@ -12,7 +12,7 @@ via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
 | Milestone | Scope | State |
 |---|---|---|
 | M1 | Core VM lifecycle: Ubuntu machines, shell, VirtioFS home share, verified stop | ✅ Done — warm boot to SSH-ready in ~7s |
-| M2 | Networking: gvisor-tap-vsock NAT (VPN-safe), `*.umbra.local` DNS, port forwarding | Not started |
+| M2 | Networking: gvisor-tap-vsock NAT (VPN-safe), `*.umbra.local` DNS, port forwarding | ✅ Done |
 | M3 | Docker: dedicated dockerd VM + `umbra` docker context | Not started |
 | M4 | launchd autostart + CI-runner machine cutover | Not started |
 | M5 | SwiftUI menu bar app | Not started |
@@ -37,6 +37,31 @@ Machines are Ubuntu 24.04 cloud images provisioned via cloud-init:
 passwordless-sudo `umbra` user, dedicated ed25519 key, chrony (clock drift
 after host sleep), growpart, and your macOS home mounted read-write at
 `/mnt/mac` over VirtioFS.
+
+## Networking (M2)
+
+Machines run on an embedded [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock)
+userspace network (subnet `192.168.127.0/24`) — no kernel NAT, no `vmnet`
+entitlement, and connectivity survives VPN connect/disconnect. Each machine
+gets a deterministic static IP the daemon assigns at create time.
+
+```sh
+bin/umbra shell dev                       # auto-forwards a loopback port to guest:22
+bin/umbra forward add dev 8080:80         # host 127.0.0.1:8080 -> guest :80
+bin/umbra forward list dev
+bin/umbra forward rm dev 8080
+```
+
+**Names.** `<machine>.umbra.local` resolves from macOS once the daemon can
+write `/etc/resolver/umbra.local` — this needs root, so if you start `umbrad`
+without `sudo` it logs a one-line `sudo` remedy and everything else still
+works. Guests resolve each other by `<name>.umbra.local` via `/etc/hosts`
+written at boot; a machine learns the names of machines that already existed
+when it booted (restart it to pick up newer ones). The host-side resolver is
+always current.
+
+The host cannot route directly into the userspace network, so reaching a guest
+always goes through a forward (`umbra shell` sets one up automatically).
 
 ## Build
 

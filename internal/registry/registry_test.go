@@ -70,3 +70,21 @@ func TestLoadAndDeleteRejectTraversalNames(t *testing.T) {
 		t.Fatalf("Delete traversal: want ErrNotFound, got %v", err)
 	}
 }
+
+func TestUsedIPsCollectsAssigned(t *testing.T) {
+	r := newTestRegistry(t)
+	must := func(m *Machine) {
+		if err := r.Save(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(&Machine{Name: "a", CPUs: 1, MemoryMiB: 512, DiskGiB: 5, Image: "ubuntu:noble", IP: "192.168.127.10"})
+	must(&Machine{Name: "b", CPUs: 1, MemoryMiB: 512, DiskGiB: 5, Image: "ubuntu:noble"}) // no IP yet
+	ips, err := r.UsedIPs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ips) != 1 || ips[0] != "192.168.127.10" {
+		t.Fatalf("got %v", ips)
+	}
+}

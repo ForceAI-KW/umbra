@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,7 +13,37 @@ import (
 func newTestManager(t *testing.T) (*Manager, *registry.Registry) {
 	t.Helper()
 	reg := registry.New(t.TempDir())
-	return NewManager(reg, t.TempDir()), reg
+	return NewManager(reg, t.TempDir(), nil, nil), reg
+}
+
+// fakeDNS is a nameSetter fake recording Set/Remove calls, used to assert
+// lifecycle wiring without importing netstack.
+type fakeDNS struct {
+	mu      sync.Mutex
+	records map[string]string
+	removed []string
+}
+
+func newFakeDNS() *fakeDNS { return &fakeDNS{records: map[string]string{}} }
+
+func (f *fakeDNS) Set(name, ip string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.records[name] = ip
+}
+
+func (f *fakeDNS) Remove(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.records, name)
+	f.removed = append(f.removed, name)
+}
+
+func (f *fakeDNS) has(name string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ip, ok := f.records[name]
+	return ip, ok
 }
 
 func saveMachine(t *testing.T, reg *registry.Registry, name string) {
@@ -27,15 +58,15 @@ func saveMachine(t *testing.T, reg *registry.Registry, name string) {
 
 // withLaunchFn overrides the package-level launchFn seam for the duration
 // of the test and restores the previous value on cleanup.
-func withLaunchFn(t *testing.T, fn func(m *registry.Machine, machinesDir string) (vzHandle, func(), error)) {
+func withLaunchFn(t *testing.T, fn func(m *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error)) {
 	t.Helper()
 	prev := launchFn
 	launchFn = fn
 	t.Cleanup(func() { launchFn = prev })
 }
 
-func fakeLaunch(h vzHandle, err error) func(m *registry.Machine, machinesDir string) (vzHandle, func(), error) {
-	return func(m *registry.Machine, machinesDir string) (vzHandle, func(), error) {
+func fakeLaunch(h vzHandle, err error) func(m *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error) {
+	return func(m *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error) {
 		if err != nil {
 			return nil, nil, err
 		}
@@ -133,7 +164,7 @@ func TestSlowLaunchObservableAsStarting(t *testing.T) {
 
 	launchStarted := make(chan struct{})
 	release := make(chan struct{})
-	withLaunchFn(t, func(mc *registry.Machine, machinesDir string) (vzHandle, func(), error) {
+	withLaunchFn(t, func(mc *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error) {
 		close(launchStarted)
 		<-release
 		return &fakeVZ{state: vzRunning}, func() {}, nil
@@ -163,7 +194,7 @@ func TestStartHonorsCanceledContext(t *testing.T) {
 	m, reg := newTestManager(t)
 	saveMachine(t, reg, "vm1")
 	launchCalled := false
-	withLaunchFn(t, func(mc *registry.Machine, machinesDir string) (vzHandle, func(), error) {
+	withLaunchFn(t, func(mc *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error) {
 		launchCalled = true
 		return &fakeVZ{state: vzRunning}, func() {}, nil
 	})
@@ -232,7 +263,7 @@ func TestStopContextBoundedWhileStartInFlight(t *testing.T) {
 
 	launchStarted := make(chan struct{})
 	release := make(chan struct{})
-	withLaunchFn(t, func(mc *registry.Machine, machinesDir string) (vzHandle, func(), error) {
+	withLaunchFn(t, func(mc *registry.Machine, machinesDir string, st netStack) (vzHandle, func(), error) {
 		close(launchStarted)
 		<-release
 		return &fakeVZ{state: vzRunning}, func() {}, nil
@@ -261,5 +292,37 @@ func TestStopContextBoundedWhileStartInFlight(t *testing.T) {
 	close(release)
 	if err := <-startDone; err != nil {
 		t.Fatalf("start: %v", err)
+	}
+}
+
+// TestStartRegistersDNSStopDeregisters covers Task 7: a confirmed Start
+// registers the machine's name -> IP with the DNS resolver seam, and a
+// confirmed Stop deregisters it. Uses fakeDNS so the assertion doesn't
+// depend on netstack's real Resolver.
+func TestStartRegistersDNSStopDeregisters(t *testing.T) {
+	reg := registry.New(t.TempDir())
+	dns := newFakeDNS()
+	m := NewManager(reg, t.TempDir(), nil, dns)
+
+	if err := reg.Save(&registry.Machine{
+		Name: "vm1", CPUs: 1, MemoryMiB: 512, DiskGiB: 10,
+		Image: "ubuntu:noble", MAC: "a6:5e:00:11:22:33", IP: "192.168.127.10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withLaunchFn(t, fakeLaunch(&fakeVZ{state: vzRunning, honorGraceful: true}, nil))
+
+	if err := m.Start(context.Background(), "vm1"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if ip, ok := dns.has("vm1"); !ok || ip != "192.168.127.10" {
+		t.Fatalf("want dns.Set(vm1, 192.168.127.10) on confirmed start, got ip=%q ok=%v", ip, ok)
+	}
+
+	if err := m.Stop(context.Background(), "vm1"); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if _, ok := dns.has("vm1"); ok {
+		t.Fatal("want dns.Remove(vm1) on confirmed stop")
 	}
 }
