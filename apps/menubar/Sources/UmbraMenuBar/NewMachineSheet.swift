@@ -48,6 +48,7 @@ struct NewMachineSheet: View {
                         }
                     }
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(name.isEmpty || creating)
             }

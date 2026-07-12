@@ -1,18 +1,27 @@
 import SwiftUI
 
-// Dashboard detail pane for a single machine: header (name + state),
-// IP/ssh/cpu/mem/disk stat row, start/stop, open-shell, and delete.
-// Reuses DashboardView's dot-color / state-label conventions.
+// Dashboard detail pane for a single machine: header (name + status pill), a
+// stat-tile grid (CPU/Memory/Disk/IP/SSH), and start/stop, open-shell,
+// delete actions. Status presentation comes from `StatusStyle` in
+// Theme.swift, shared with DashboardView/MenuBarView.
 
 struct MachineDetailView: View {
     let machine: Machine
     @EnvironmentObject var model: StatusModel
     @State private var showDeleteConfirm = false
 
+    private var statusStyle: StatusStyle { StatusStyle(machine) }
+
+    private let columns = [
+        GridItem(.flexible()),
+        GridItem(.flexible()),
+        GridItem(.flexible())
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 20) {
             header
-            statRow
+            statGrid
             Spacer(minLength: 0)
             actions
         }
@@ -22,36 +31,36 @@ struct MachineDetailView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(spacing: 10) {
             Text(machine.name)
-                .font(.title2)
-                .bold()
-            Text(stateLabel)
+                .font(.title2.bold())
+            StatusPill(color: statusStyle.color, text: statusStyle.label)
+        }
+    }
+
+    private var statGrid: some View {
+        LazyVGrid(columns: columns, spacing: 12) {
+            statTile(icon: "cpu", value: "\(machine.cpus)", label: "CPU", numeric: true)
+            statTile(icon: "memorychip", value: "\(machine.memoryMiB / 1024) GiB", label: "Memory", numeric: true)
+            statTile(icon: "internaldrive", value: "\(machine.diskGiB) GiB", label: "Disk", numeric: true)
+            statTile(icon: "network", value: machine.ip ?? "—", label: "IP", numeric: false)
+            statTile(icon: "terminal", value: machine.sshPort.map(String.init) ?? "—", label: "SSH", numeric: true)
+        }
+    }
+
+    private func statTile(icon: String, value: String, label: String, numeric: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Image(systemName: icon)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    private var stateLabel: String {
-        machine.zombie == true ? "crashed*" : machine.state.rawValue
-    }
-
-    private var statRow: some View {
-        HStack(spacing: 24) {
-            stat("IP", machine.ip ?? "—")
-            stat("SSH Port", machine.sshPort.map(String.init) ?? "—")
-            stat("CPU", "\(machine.cpus) CPU")
-            stat("RAM", "\(machine.memoryMiB / 1024) GiB")
-            stat("Disk", "\(machine.diskGiB) GiB")
-        }
-    }
-
-    private func stat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(numeric ? .body.monospacedDigit() : .body)
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(value)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var actions: some View {
@@ -66,16 +75,19 @@ struct MachineDetailView: View {
                         Text(machine.state == .running ? "Stop" : "Start")
                     }
                 }
+                .buttonStyle(.borderedProminent)
 
                 Button("Open Shell") {
                     model.openShell(machine)
                 }
+                .buttonStyle(.bordered)
                 .disabled(!(machine.state == .running && machine.sshPort != nil))
 
                 Button("Delete") {
                     showDeleteConfirm = true
                 }
-                .foregroundStyle(.red)
+                .buttonStyle(.bordered)
+                .tint(.red)
                 .disabled(machine.state != .stopped)
                 .confirmationDialog(
                     "Delete \(machine.name)?",

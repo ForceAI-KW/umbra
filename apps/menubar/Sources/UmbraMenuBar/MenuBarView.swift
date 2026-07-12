@@ -3,7 +3,9 @@ import AppKit
 
 // The MenuBarExtra `.window`-style popover content: status header, machine
 // list with per-row start/stop + shell actions, docker toggle, quit footer.
-// See docs/research/menubar-app.md §1 (.window style), §7 (status dot).
+// Status presentation comes from `StatusStyle`/`daemonDotColor`/`StatusPill`
+// in Theme.swift, shared with DashboardView/MachineDetailView. See
+// docs/research/menubar-app.md §1 (.window style), §7 (status dot).
 
 struct MenuBarView: View {
     @EnvironmentObject var model: StatusModel
@@ -33,20 +35,25 @@ struct MenuBarView: View {
     }
 
     private var header: some View {
-        HStack {
-            statusDot(color: headerDotColor)
+        HStack(spacing: 6) {
+            UmbraMark(size: 16)
             Text("Umbra").bold()
             Spacer()
+            StatusPill(color: daemonColor, text: daemonText)
         }
         .padding()
     }
 
-    private var headerDotColor: Color {
-        if model.cliMissing { return .gray }
+    private var daemonColor: Color {
+        daemonDotColor(daemon: model.status?.daemon, cliMissing: model.cliMissing)
+    }
+
+    private var daemonText: String {
+        if model.cliMissing { return "—" }
         switch model.status?.daemon {
-        case "up": return .green
-        case "down": return .red
-        default: return .gray
+        case "up": return "up"
+        case "down": return "down"
+        default: return "—"
         }
     }
 
@@ -61,19 +68,18 @@ struct MenuBarView: View {
     }
 
     private func machineRow(_ machine: Machine) -> some View {
-        HStack {
-            statusDot(color: machineDotColor(machine))
+        let s = StatusStyle(machine)
+        return HStack {
+            Image(systemName: s.symbol)
+                .foregroundStyle(s.color)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(machine.name)
-                    Text(stateLabel(machine))
-                        .foregroundStyle(.secondary)
-                }
+                Text(machine.name)
                 Text("\(machine.cpus) CPU · \(machine.memoryMiB / 1024) GiB")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            StatusPill(color: s.color, text: s.label)
 
             Button {
                 Task { await model.toggleMachine(machine) }
@@ -96,26 +102,13 @@ struct MenuBarView: View {
         }
     }
 
-    private func machineDotColor(_ machine: Machine) -> Color {
-        if machine.zombie == true { return .red }
-        switch machine.state {
-        case .running: return .green
-        case .starting, .stopping: return .yellow
-        case .stopped: return .gray
-        case .crashed: return .red
-        }
-    }
-
-    private func stateLabel(_ machine: Machine) -> String {
-        machine.zombie == true ? "crashed*" : machine.state.rawValue
-    }
-
     private var dockerSection: some View {
         HStack {
-            Text("Docker")
-            Text(dockerStatusText)
+            Image(systemName: "shippingbox.fill")
                 .foregroundStyle(.secondary)
+            Text("Docker")
             Spacer()
+            StatusPill(color: dockerColor, text: dockerStatusText)
             if model.status?.docker?.installed == true {
                 Button {
                     Task { await model.toggleDocker() }
@@ -130,6 +123,11 @@ struct MenuBarView: View {
             }
         }
         .padding()
+    }
+
+    private var dockerColor: Color {
+        guard let docker = model.status?.docker, docker.installed else { return .umbraStopped }
+        return docker.running ? .umbraRunning : .umbraStopped
     }
 
     private var dockerStatusText: String {
@@ -147,11 +145,5 @@ struct MenuBarView: View {
             .buttonStyle(.borderless)
         }
         .padding()
-    }
-
-    private func statusDot(color: Color) -> some View {
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
     }
 }
