@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
 	"syscall"
 
 	"github.com/Code-Hex/vz/v3"
@@ -28,6 +29,10 @@ import (
 // vz owns the fd handed to NewFileHandleNetworkDeviceAttachment for the
 // lifetime of the VM — it must not be closed here (mirrors vfkit's own
 // Socket-attachment teardown).
+//
+// The caller MUST invoke the returned cleanup exactly once, even if VM setup
+// fails downstream after Attach succeeds — otherwise the AcceptVfkit goroutine
+// and both socket fds leak for the process lifetime.
 func (s *Stack) Attach(mac string) (*vz.VirtioNetworkDeviceConfiguration, func() error, error) {
 	hw, err := net.ParseMAC(mac)
 	if err != nil {
@@ -52,12 +57,19 @@ func (s *Stack) Attach(mac string) (*vz.VirtioNetworkDeviceConfiguration, func()
 	vzFile := os.NewFile(uintptr(fds[0]), "vz-net")   // fds[0] -> handed to vz
 	gtvFile := os.NewFile(uintptr(fds[1]), "gtv-net") // fds[1] -> handed to gvisor-tap-vsock
 
+	// Once NewFileHandleNetworkDeviceAttachment succeeds, vz's native
+	// NSFileHandle owns fds[0] for the VM's lifetime — we must NOT close
+	// vzFile after that point (closing it would double-close the fd at the
+	// cgo/ObjC boundary, an EBADF/abort that guardedNet's recover cannot
+	// catch). vzOwned tracks the exact handoff moment.
 	var netConfig *vz.VirtioNetworkDeviceConfiguration
+	vzOwned := false
 	err = guardedNet("attach", func() error {
 		attachment, err := vz.NewFileHandleNetworkDeviceAttachment(vzFile)
 		if err != nil {
 			return err
 		}
+		vzOwned = true // fd handed off; never close vzFile from here on
 		cfg, err := vz.NewVirtioNetworkDeviceConfiguration(attachment)
 		if err != nil {
 			return err
@@ -71,14 +83,16 @@ func (s *Stack) Attach(mac string) (*vz.VirtioNetworkDeviceConfiguration, func()
 		return nil
 	})
 	if err != nil {
-		_ = vzFile.Close()
+		if !vzOwned {
+			_ = vzFile.Close()
+		}
 		_ = gtvFile.Close()
 		return nil, nil, fmt.Errorf("attach: %w", err)
 	}
 
 	gtvConn, err := net.FileConn(gtvFile) // dups the fd; safe to Close() gtvFile after this
 	if err != nil {
-		_ = vzFile.Close()
+		// vz owns vzFile now — do not close it; only clean up our own end.
 		_ = gtvFile.Close()
 		return nil, nil, fmt.Errorf("attach: file conn: %w", err)
 	}
@@ -86,14 +100,25 @@ func (s *Stack) Attach(mac string) (*vz.VirtioNetworkDeviceConfiguration, func()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("netstack: AcceptVfkit panic for %s: %v", mac, r)
+			}
+		}()
 		if err := s.vn.AcceptVfkit(ctx, gtvConn); err != nil {
 			log.Printf("netstack: guest link %s closed: %v", mac, err)
 		}
 	}()
 
+	// Keep vzFile reachable to the GC for the VM's lifetime: os.File installs a
+	// finalizer that closes the fd when the *os.File becomes unreachable, which
+	// would yank the descriptor out from under vz's NSFileHandle. Pin it inside
+	// the cleanup closure (which outlives Attach and is held by the VM).
 	cleanup := func() error {
 		cancel() // unblocks AcceptVfkit's read loop
-		return gtvConn.Close()
+		err := gtvConn.Close()
+		runtime.KeepAlive(vzFile) // vz-owned fd stays valid until teardown
+		return err
 	}
 	return netConfig, cleanup, nil
 }
