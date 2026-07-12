@@ -99,7 +99,7 @@ Name **Umbra** (Ahmad, 2026-07-11) — the darkest core of a shadow; VMs running
 
 ## Milestones
 
-1. **M1 — Core VM lifecycle**: umbrad + `umbra`; Ubuntu machine boots via cloud-init; `umbra shell` works; VirtioFS home mount.
+1. **M1 — Core VM lifecycle**: umbrad + `umbra`; Ubuntu machine boots via cloud-init; `umbra shell` works; VirtioFS home mount. ✅ **DONE 2026-07-12** (warm boot→ready ~7s; deviation: netplan `dhcp-identifier: mac` added after live-boot testing exposed the Ubuntu-DUID/bootpd lease trap).
 2. **M2 — Networking**: gvisor-tap-vsock NAT; `.umbra.local` DNS + host resolver; port forwarding.
 3. **M3 — Docker**: docker VM, socket forward, `umbra` context; build/run/compose parity; docker-event-driven DNS + auto port forwarding.
 4. **M4 — Autostart + fwb-ci cutover**: LaunchAgent, autostart flag, watchdog probe. Cutover: fresh `fwb-ci2` machine in Umbra → install + register runners **in parallel** with OrbStack's → verify green CI runs → deregister old runners → retire OrbStack machine → uninstall OrbStack.

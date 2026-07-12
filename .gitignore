@@ -1,0 +1,5 @@
+bin/
+*.img
+*.iso
+.DS_Store
+coverage.out

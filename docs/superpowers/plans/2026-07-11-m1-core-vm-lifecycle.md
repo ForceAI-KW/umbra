@@ -6,7 +6,7 @@
 
 **Architecture:** Go daemon (`umbrad`) owns VMs via Code-Hex/vz v3 (EFI boot, Ubuntu cloud image + cloud-init NoCloud seed ISO, VZNATNetworkDeviceAttachment for M1 networking, VirtioFS home share). JSON API over a unix socket; `umbra` CLI is a thin client. Every VM runs behind a per-VM state-machine goroutine with panic-recovery boundaries (PITFALLS P1), graceful-then-hard stop (P8), verified teardown (P9), and staged bounded boot-readiness (P6). gvisor-tap-vsock networking, DNS, docker, GUI come in M2+.
 
-**Tech Stack:** Go 1.23+, github.com/Code-Hex/vz/v3 v3.7.1 (pinned), github.com/lima-vm/go-qcow2reader, github.com/kdomanski/iso9660, github.com/spf13/cobra, golang.org/x/crypto/ssh.
+**Tech Stack:** Go 1.25+, github.com/Code-Hex/vz/v3 v3.7.1 (pinned), github.com/lima-vm/go-qcow2reader, github.com/kdomanski/iso9660, github.com/spf13/cobra, golang.org/x/crypto/ssh.
 
 ## Global Constraints
 
@@ -139,7 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.23' }
+        with: { go-version: '1.25' }
       - run: make lint
   unit:
     runs-on: macos-14
@@ -147,7 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.23' }
+        with: { go-version: '1.25' }
       - run: go test ./... -count=1
   build:
     runs-on: macos-14
@@ -155,7 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.23' }
+        with: { go-version: '1.25' }
       - run: make build
   vuln:
     runs-on: macos-14
@@ -163,7 +163,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.23' }
+        with: { go-version: '1.25' }
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
   gitleaks:
     runs-on: ubuntu-latest
@@ -171,7 +171,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
   notify-failure:
     needs: [lint, unit, build, vuln, gitleaks]
