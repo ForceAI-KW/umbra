@@ -26,6 +26,7 @@ app: build
 	cp $(BIN)/umbra $(APP)/Contents/MacOS/umbra
 	cp $(BIN)/umbrad $(APP)/Contents/MacOS/umbrad
 	cp $(MENUBAR)/Resources/vz.entitlements $(APP)/Contents/Resources/vz.entitlements
+	cp $(MENUBAR)/Resources/icon/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	cp $(MENUBAR)/Resources/Info.plist $(APP)/Contents/Info.plist
 	# Sign the OUTER bundle only — NOT --deep. --deep would re-sign the nested
 	# umbrad with the app's (empty) entitlements, silently stripping
