@@ -23,6 +23,7 @@ type Machine struct {
 	DiskGiB   uint64    `json:"disk_gib"`
 	Image     string    `json:"image"`
 	MAC       string    `json:"mac"`
+	IP        string    `json:"ip,omitempty"`
 	Autostart bool      `json:"autostart"`
 	HostBuild string    `json:"host_build"`
 	CreatedAt time.Time `json:"created_at"`
@@ -101,4 +102,18 @@ func (r *Registry) Delete(name string) error {
 		return err
 	}
 	return os.RemoveAll(filepath.Join(r.dir, name))
+}
+
+func (r *Registry) UsedIPs() ([]string, error) {
+	machines, err := r.List()
+	if err != nil {
+		return nil, err
+	}
+	var ips []string
+	for _, m := range machines {
+		if m.IP != "" {
+			ips = append(ips, m.IP)
+		}
+	}
+	return ips, nil
 }
