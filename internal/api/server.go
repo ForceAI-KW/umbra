@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,15 +25,34 @@ type Lifecycle interface {
 
 type Provisioner func(ctx context.Context, m *registry.Machine) error
 
+// ForwardView is the API's own port-forward representation, kept separate
+// from netstack.ForwardView so this package never imports internal/netstack
+// (and its tests can fake Forwarder without a real gvisor-tap-vsock stack).
+type ForwardView struct {
+	Local    string `json:"local"`
+	Remote   string `json:"remote"`
+	Protocol string `json:"protocol"`
+}
+
+// Forwarder is the seam over the shared netstack for host<->guest port
+// forwarding. Satisfied by *netstack.Stack via a small adapter in umbrad
+// (its Forwards() returns []netstack.ForwardView, not []api.ForwardView).
+type Forwarder interface {
+	Expose(protocol, local, remote string) error
+	Unexpose(protocol, local string) error
+	Forwards() ([]ForwardView, error)
+}
+
 type Server struct {
 	reg   *registry.Registry
 	lc    Lifecycle
 	prov  Provisioner
 	ready func(ctx context.Context, m *registry.Machine) (string, error)
+	fwd   Forwarder
 }
 
-func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready func(ctx context.Context, m *registry.Machine) (string, error)) *Server {
-	return &Server{reg: reg, lc: lc, prov: prov, ready: ready}
+func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready func(ctx context.Context, m *registry.Machine) (string, error), fwd Forwarder) *Server {
+	return &Server{reg: reg, lc: lc, prov: prov, ready: ready, fwd: fwd}
 }
 
 type MachineView struct {
@@ -204,6 +224,96 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if err := s.reg.Delete(name); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("POST /v1/machines/{name}/forwards", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		m, err := s.reg.Load(name)
+		if err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		if info := s.lc.Info(name); info.State != vm.StateRunning {
+			writeErr(w, 409, fmt.Errorf("machine %q is not running", name))
+			return
+		}
+		var req struct {
+			LocalPort int    `json:"local_port"`
+			GuestPort int    `json:"guest_port"`
+			Protocol  string `json:"protocol"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		proto := req.Protocol
+		if proto == "" {
+			proto = "tcp"
+		}
+		if proto != "tcp" && proto != "udp" {
+			writeErr(w, 400, fmt.Errorf("invalid protocol %q, want \"tcp\" or \"udp\"", proto))
+			return
+		}
+		if req.LocalPort <= 0 || req.GuestPort <= 0 {
+			writeErr(w, 400, fmt.Errorf("local_port and guest_port must be positive"))
+			return
+		}
+		if m.IP == "" {
+			writeErr(w, 500, fmt.Errorf("machine %q has no IP assigned", name))
+			return
+		}
+		local := fmt.Sprintf("127.0.0.1:%d", req.LocalPort)
+		remote := fmt.Sprintf("%s:%d", m.IP, req.GuestPort)
+		if err := s.fwd.Expose(proto, local, remote); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 201, ForwardView{Local: local, Remote: remote, Protocol: proto})
+	})
+
+	mux.HandleFunc("GET /v1/machines/{name}/forwards", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		m, err := s.reg.Load(name)
+		if err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		all, err := s.fwd.Forwards()
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		out := make([]ForwardView, 0)
+		prefix := m.IP + ":"
+		for _, f := range all {
+			if m.IP != "" && strings.HasPrefix(f.Remote, prefix) {
+				out = append(out, f)
+			}
+		}
+		writeJSON(w, 200, out)
+	})
+
+	mux.HandleFunc("DELETE /v1/machines/{name}/forwards/{local_port}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if _, err := s.reg.Load(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		localPort, err := strconv.Atoi(r.PathValue("local_port"))
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("invalid local_port %q", r.PathValue("local_port")))
+			return
+		}
+		proto := r.URL.Query().Get("protocol")
+		if proto == "" {
+			proto = "tcp"
+		}
+		local := fmt.Sprintf("127.0.0.1:%d", localPort)
+		if err := s.fwd.Unexpose(proto, local); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
