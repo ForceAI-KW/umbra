@@ -23,8 +23,18 @@ app: build
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp $(MENUBAR)/.build/release/UmbraMenuBar $(APP)/Contents/MacOS/UmbraMenuBar
 	cp $(BIN)/umbra $(APP)/Contents/MacOS/umbra
+	cp $(BIN)/umbrad $(APP)/Contents/MacOS/umbrad
+	cp $(MENUBAR)/Resources/vz.entitlements $(APP)/Contents/Resources/vz.entitlements
 	cp $(MENUBAR)/Resources/Info.plist $(APP)/Contents/Info.plist
-	codesign --force --deep --sign - $(APP)
+	# Sign the OUTER bundle only — NOT --deep. --deep would re-sign the nested
+	# umbrad with the app's (empty) entitlements, silently stripping
+	# com.apple.security.virtualization so the bundled daemon can't boot VMs.
+	# umbra/umbrad arrive already signed from `make build` (umbrad with the
+	# entitlement); we do not touch them here.
+	codesign --force --sign - $(APP)
+	@codesign -d --entitlements :- $(APP)/Contents/MacOS/umbrad 2>&1 | grep -q 'com.apple.security.virtualization' \
+		|| { echo "ERROR: bundled umbrad lost its virtualization entitlement (did --deep sneak back in?)"; exit 1; }
+	@echo "app: $(APP) (umbrad entitlement verified)"
 
 app-test:
 	swift test --package-path $(MENUBAR)
