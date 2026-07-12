@@ -119,7 +119,7 @@ func newTestServerWithDocker(t *testing.T) (*httptest.Server, *fakeLC, *fakeForw
 	s := NewServer(reg, lc,
 		func(ctx context.Context, m *registry.Machine) error { return nil },
 		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
-		fwd, dk)
+		fwd, dk, func() string { return "installed" })
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts, lc, fwd, dk
@@ -231,7 +231,7 @@ func TestDeleteZombieMachineReturns409(t *testing.T) {
 	s := NewServer(reg, fakeZombieLC{},
 		func(ctx context.Context, m *registry.Machine) error { return nil },
 		func(ctx context.Context, m *registry.Machine) (string, error) { return "", nil },
-		&fakeForwarder{}, &fakeDocker{})
+		&fakeForwarder{}, &fakeDocker{}, func() string { return "installed" })
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -274,7 +274,7 @@ func newForwardTestServer(t *testing.T) (*httptest.Server, *fakeLC, *fakeForward
 			return reg.Save(m)
 		},
 		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
-		fwd, &fakeDocker{})
+		fwd, &fakeDocker{}, func() string { return "installed" })
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts, lc, fwd
@@ -474,7 +474,7 @@ func TestListMachinesExcludesOnlyReservedDockerRole(t *testing.T) {
 	s := NewServer(reg, lc,
 		func(ctx context.Context, m *registry.Machine) error { return nil },
 		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
-		&fakeForwarder{}, &fakeDocker{})
+		&fakeForwarder{}, &fakeDocker{}, func() string { return "installed" })
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -614,5 +614,30 @@ func TestDockerStartBeforeInstallReturns500(t *testing.T) {
 	resp := postJSON(t, ts.URL+"/v1/docker/start", nil)
 	if resp.StatusCode != 500 {
 		t.Fatalf("start before install: %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestRosettaStatus(t *testing.T) {
+	reg := registry.New(t.TempDir())
+	lc := &fakeLC{states: map[string]vm.State{}}
+	s := NewServer(reg, lc,
+		func(ctx context.Context, m *registry.Machine) error { return nil },
+		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
+		&fakeForwarder{}, &fakeDocker{}, func() string { return "notInstalled" })
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/v1/rosetta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Available string `json:"available"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Available != "notInstalled" {
+		t.Fatalf("available = %q, want notInstalled", out.Available)
 	}
 }

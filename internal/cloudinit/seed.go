@@ -28,9 +28,7 @@ package_update: false
 growpart:
   mode: auto
   devices: ["/"]
-mounts:
-  - [home, /mnt/mac, virtiofs, "defaults,nofail", "0", "0"]
-ssh_pwauth: false
+%sssh_pwauth: false
 %s%s`
 
 // dockerWriteFiles renders the write_files entry for the dockerd systemd
@@ -94,7 +92,7 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string, hosts map[string]
 	if m.Role == registry.ReservedDockerName {
 		writeFiles = dockerWriteFiles
 	}
-	userData := fmt.Sprintf(userDataTmpl, sshPub, writeFiles, runcmdSection(hosts, m.Role))
+	userData := fmt.Sprintf(userDataTmpl, sshPub, mountsSection(m.Role), writeFiles, runcmdSection(hosts, m.Role))
 	metaData := fmt.Sprintf(metaDataTmpl, m.Name, m.Name)
 	networkConfig := fmt.Sprintf(networkConfigTmpl, m.IP, netstack.Gateway, netstack.Gateway)
 	if err := w.AddFile(strings.NewReader(userData), "user-data"); err != nil {
@@ -123,6 +121,32 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string, hosts map[string]
 	return isoPath, os.Rename(isoPath+".tmp", isoPath)
 }
 
+// needsRosetta reports whether role requires the Rosetta amd64 support
+// added in M6: the "vz-rosetta" virtiofs share (mountsSection) plus the
+// F-flagged binfmt_misc handler (rosettaRuncmdLines) that lets
+// `docker run --platform linux/amd64` work inside the guest. Both the
+// reserved docker machine and CI runners need it.
+func needsRosetta(role string) bool {
+	return role == registry.ReservedDockerName || role == registry.RoleCIRunner
+}
+
+// mountsSection renders the cloud-config `mounts:` list: the "home" share
+// (all machines) plus the Rosetta virtiofs share for roles that need amd64
+// emulation (see needsRosetta). Tag "vz-rosetta" matches the directory
+// share configured in internal/vm/config_darwin.go.
+func mountsSection(role string) string {
+	lines := []string{`[home, /mnt/mac, virtiofs, "defaults,nofail", "0", "0"]`}
+	if needsRosetta(role) {
+		lines = append(lines, `[vz-rosetta, /mnt/rosetta, virtiofs, "defaults,nofail", "0", "0"]`)
+	}
+	var b strings.Builder
+	b.WriteString("mounts:\n")
+	for _, line := range lines {
+		fmt.Fprintf(&b, "  - %s\n", line)
+	}
+	return b.String()
+}
+
 // runcmdSection assembles the single cloud-config runcmd: block cloud-init
 // permits, merging hosts-propagation lines with the docker/ci-runner
 // provisioning lines (when role matches). Returns "" (no runcmd section)
@@ -134,6 +158,9 @@ func runcmdSection(hosts map[string]string, role string) string {
 		lines = append(lines, dockerRuncmdLines()...)
 	case registry.RoleCIRunner:
 		lines = append(lines, ciRunnerRuncmdLines()...)
+	}
+	if needsRosetta(role) {
+		lines = append(lines, rosettaRuncmdLines()...)
 	}
 	if len(lines) == 0 {
 		return ""
@@ -212,5 +239,25 @@ func ciRunnerRuncmdLines() []string {
 		"usermod -aG docker umbra",
 		"systemctl enable docker",
 		"systemctl restart docker",
+	}
+}
+
+// rosettaRuncmdLines renders the binfmt_misc registration for the Rosetta
+// x86-64 ELF handler, mounted at "vz-rosetta" (config_darwin.go) → /mnt/rosetta.
+// The F flag is required: without it the handler can't resolve the
+// interpreter path from inside a container's mount namespace, so
+// `docker run --platform linux/amd64` would fail even though a bare host
+// exec of an amd64 binary would work. Magic/mask/flags verified against
+// lima-vm/lima's shipping boot.Linux/05-rosetta-volume.sh (same Code-Hex/vz
+// mount mechanism) — see docs/research/rosetta-amd64.md §5. Uses printf, not
+// `echo -e`: cloud-init's runcmd executes via dash, whose builtin echo
+// doesn't expand \x escapes (same gotcha as hostsRuncmdLines above). The
+// binfmt_misc mount-then-register isn't idempotent across every possible
+// reboot ordering (mirrors the caveat already on hostsRuncmdLines) — fine
+// for first boot, per M2/M6 scope.
+func rosettaRuncmdLines() []string {
+	return []string{
+		`mountpoint -q /proc/sys/fs/binfmt_misc || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc`,
+		`test -f /proc/sys/fs/binfmt_misc/rosetta || printf ':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/mnt/rosetta/rosetta:OCF' > /proc/sys/fs/binfmt_misc/register`,
 	}
 }

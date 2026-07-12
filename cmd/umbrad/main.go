@@ -163,7 +163,7 @@ func run(logger *slog.Logger) error {
 
 	docker := newDockerController(reg, mgr, st, provision, ready, logger, daemonCtx, &bridgeWG)
 
-	srv := api.NewServer(reg, mgr, provision, ready, forwarderAdapter{st: st}, docker)
+	srv := api.NewServer(reg, mgr, provision, ready, forwarderAdapter{st: st}, docker, vm.RosettaAvailability)
 
 	sock := paths.APISocket()
 	_ = os.Remove(sock) // stale socket from a previous run

@@ -1,10 +1,12 @@
 BIN := bin
 GOFLAGS := -trimpath
+VERSION := $(shell cat VERSION)
 
 APP := $(BIN)/Umbra.app
 MENUBAR := apps/menubar
+RELEASE_TARBALL := $(BIN)/umbra-$(VERSION)-macos-arm64.tar.gz
 
-.PHONY: build test test-integration lint clean run-daemon app app-test
+.PHONY: build test test-integration lint clean run-daemon app app-test release
 
 build:
 	mkdir -p $(BIN)
@@ -26,6 +28,26 @@ app: build
 
 app-test:
 	swift test --package-path $(MENUBAR)
+
+# release assembles the signed binaries + app bundle from build/app into
+# bin/umbra-<version>-macos-arm64.tar.gz (clean paths inside the tarball via
+# `tar -C`, no bin/ prefix). Version comes from the VERSION file.
+release: build app
+	rm -rf $(BIN)/release-stage
+	mkdir -p $(BIN)/release-stage
+	cp $(BIN)/umbrad $(BIN)/umbra $(BIN)/release-stage/
+	cp -R $(APP) $(BIN)/release-stage/Umbra.app
+	cp LICENSE $(BIN)/release-stage/
+	printf 'Umbra %s -- macOS arm64\n===============================\n\n' "$(VERSION)" > $(BIN)/release-stage/INSTALL.txt
+	printf 'Requirements: macOS 13+ on Apple Silicon (arm64).\n\n' >> $(BIN)/release-stage/INSTALL.txt
+	printf '1. Copy the binaries onto your PATH:\n     sudo cp umbra umbrad /usr/local/bin/\n\n' >> $(BIN)/release-stage/INSTALL.txt
+	printf '2. Install the daemon as a LaunchAgent (auto-starts at login):\n     umbra daemon install\n\n' >> $(BIN)/release-stage/INSTALL.txt
+	printf '3. Open the menu bar app:\n     open Umbra.app\n\n' >> $(BIN)/release-stage/INSTALL.txt
+	printf 'First-run note: umbrad ships ad-hoc codesigned with the\ncom.apple.security.virtualization entitlement; macOS shows an interactive,\none-time permission prompt the first time it boots a VM -- approve it to\nallow Virtualization.framework access.\n\n' >> $(BIN)/release-stage/INSTALL.txt
+	printf 'Docs: https://github.com/ForceAI-KW/umbra\nTroubleshooting: docs/PITFALLS-EXTERNAL.md, docs/runbooks/\n' >> $(BIN)/release-stage/INSTALL.txt
+	tar -czf $(RELEASE_TARBALL) -C $(BIN)/release-stage umbrad umbra Umbra.app LICENSE INSTALL.txt
+	rm -rf $(BIN)/release-stage
+	@echo "release: $(RELEASE_TARBALL)"
 
 test:
 	go test ./... -count=1

@@ -16,7 +16,7 @@ via a lightweight Go daemon (`umbrad`) and CLI (`umbra`).
 | M3 | Docker: dedicated dockerd VM + `umbra` docker context | ✅ Done |
 | M4 | launchd autostart + CI-runner cutover kit (cutover is human-gated) | ✅ Done (kit built; cutover is Ahmad's runbook) |
 | M5 | SwiftUI menu bar app | ✅ Done |
-| M6 | Rosetta (amd64) + OSS release polish | Not started |
+| M6 | Rosetta (amd64) + release | ✅ Done |
 
 ## Usage (M1)
 
@@ -89,6 +89,20 @@ Not yet implemented (deferred): per-container `<name>.umbra.local` DNS and
 auto-forwarding of published container ports (design-spec "docker-event-driven"
 feature) — M3 delivers the VM + socket + context foundation.
 
+## Rosetta / amd64 (M6)
+
+`docker run --platform linux/amd64 ...` works unchanged on the docker VM (and
+on `ci-runner` machines) because Umbra mounts a Rosetta VirtioFS share
+(`vz-rosetta`) into the guest and registers the F-flagged x86-64 `binfmt_misc`
+handler — no extra docker/containerd config needed. Rosetta is auto-installed
+(if missing) the first time such a machine boots; ordinary machines don't get
+the share (role-gated).
+
+```sh
+umbra rosetta status     # installed / not installed / not supported
+docker run --rm --platform linux/amd64 alpine uname -m   # -> x86_64
+```
+
 ## Menu bar app (M5)
 
 A menu-bar-only SwiftUI app (`Umbra.app`) — a thin client that shells out to the
@@ -158,6 +172,18 @@ make test-integration  # boots a real VM (this Mac only, ~40s warm)
 in the build step. See
 [docs/runbooks/entitlements-and-codesigning.md](docs/runbooks/entitlements-and-codesigning.md).
 
+## Install
+
+```sh
+make release   # bin/umbra-<version>-macos-arm64.tar.gz: umbrad, umbra,
+               # Umbra.app, LICENSE, INSTALL.txt
+```
+
+Untar it and follow `INSTALL.txt` (copy the binaries onto your `PATH`,
+`umbra daemon install`, `open Umbra.app`). There's no notarized/Developer-ID
+build — see [CONTRIBUTING.md](CONTRIBUTING.md#security-posture) — so expect a
+Gatekeeper prompt on first run.
+
 ## Design notes
 
 Umbra's lifecycle code is engineered against 24 documented production
@@ -182,6 +208,11 @@ code — see [docs/PITFALLS-EXTERNAL.md](docs/PITFALLS-EXTERNAL.md). Highlights:
 - [docs/superpowers/specs/2026-07-11-umbra-design.md](docs/superpowers/specs/2026-07-11-umbra-design.md) — design spec
 - [docs/superpowers/plans/2026-07-11-m1-core-vm-lifecycle.md](docs/superpowers/plans/2026-07-11-m1-core-vm-lifecycle.md) — M1 implementation plan (spec-driven development, TDD)
 - [docs/runbooks/entitlements-and-codesigning.md](docs/runbooks/entitlements-and-codesigning.md) — entitlements & codesigning runbook
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — build/test commands, repo
+structure, and the pitfall-driven, plan-before-code approach.
 
 ## License
 
