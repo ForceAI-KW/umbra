@@ -5,7 +5,6 @@ import Foundation
 // live once, in Go (`internal/client/client.go`). See docs/research/menubar-app.md §2.
 
 enum CLIError: Error {
-    case notFound
     case nonZeroExit(Int32, String)
     case spawnFailed(Error)
 }
@@ -121,16 +120,23 @@ struct CLI {
     /// (`NSAppleScript`, not an `osascript` subprocess). Logs and swallows
     /// errors rather than throwing — a failed shell handoff shouldn't crash
     /// the popover's action flow.
-    func openShell(machineName: String) {
+    ///
+    /// Runs the AppleScript OFF the main actor: `executeAndReturnError` is a
+    /// blocking Apple Event that can stall for seconds on a cold Terminal
+    /// launch or while the "Umbra wants to control Terminal" Automation prompt
+    /// is up — doing it on the main actor would freeze the SwiftUI popover.
+    nonisolated func openShell(machineName: String) {
         let script = openShellScript(machineName: machineName)
-        guard let appleScript = NSAppleScript(source: script) else {
-            FileHandle.standardError.write(Data("openShell: failed to construct NSAppleScript\n".utf8))
-            return
-        }
-        var errorInfo: NSDictionary?
-        appleScript.executeAndReturnError(&errorInfo)
-        if let errorInfo {
-            FileHandle.standardError.write(Data("openShell: AppleScript error: \(errorInfo)\n".utf8))
+        Task.detached {
+            guard let appleScript = NSAppleScript(source: script) else {
+                FileHandle.standardError.write(Data("openShell: failed to construct NSAppleScript\n".utf8))
+                return
+            }
+            var errorInfo: NSDictionary?
+            appleScript.executeAndReturnError(&errorInfo)
+            if let errorInfo {
+                FileHandle.standardError.write(Data("openShell: AppleScript error: \(errorInfo)\n".utf8))
+            }
         }
     }
 }
