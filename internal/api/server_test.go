@@ -360,3 +360,33 @@ func TestForwardListFiltersByMachine(t *testing.T) {
 		t.Fatalf("filtered list = %+v", list)
 	}
 }
+
+func TestForwardAddRejectsBadPortAndProtocol(t *testing.T) {
+	ts, _, _ := newForwardTestServer(t)
+	postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "fp"})
+	postJSON(t, ts.URL+"/v1/machines/fp/start", nil)
+
+	for _, body := range []map[string]any{
+		{"local_port": 999999, "guest_port": 22},
+		{"local_port": 2222, "guest_port": 0},
+		{"local_port": 2222, "guest_port": 22, "protocol": "icmp"},
+	} {
+		if resp := postJSON(t, ts.URL+"/v1/machines/fp/forwards", body); resp.StatusCode != 400 {
+			t.Fatalf("body %v: got %d, want 400", body, resp.StatusCode)
+		}
+	}
+}
+
+func TestForwardDeleteValidatesPortAndProtocol(t *testing.T) {
+	ts, _, _ := newForwardTestServer(t)
+	postJSON(t, ts.URL+"/v1/machines", map[string]any{"name": "fd"})
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/machines/fd/forwards/70000", nil)
+	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != 400 {
+		t.Fatalf("out-of-range port: got %d, want 400", resp.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodDelete, ts.URL+"/v1/machines/fd/forwards/2222?protocol=icmp", nil)
+	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != 400 {
+		t.Fatalf("bad protocol: got %d, want 400", resp.StatusCode)
+	}
+}

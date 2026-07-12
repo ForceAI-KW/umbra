@@ -93,6 +93,9 @@ func parsePortPair(s string) (local, guest int, err error) {
 	if guest, err = strconv.Atoi(parts[1]); err != nil {
 		return 0, 0, fmt.Errorf("invalid guest port %q: %w", parts[1], err)
 	}
+	if local < 1 || local > 65535 || guest < 1 || guest > 65535 {
+		return 0, 0, fmt.Errorf("ports must be in range 1-65535")
+	}
 	return local, guest, nil
 }
 

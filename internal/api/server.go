@@ -71,6 +71,13 @@ type CreateRequest struct {
 	Autostart bool   `json:"autostart"`
 }
 
+func validPort(p int) error {
+	if p < 1 || p > 65535 {
+		return fmt.Errorf("port %d out of range (1-65535)", p)
+	}
+	return nil
+}
+
 func writeErr(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -258,8 +265,12 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 400, fmt.Errorf("invalid protocol %q, want \"tcp\" or \"udp\"", proto))
 			return
 		}
-		if req.LocalPort <= 0 || req.GuestPort <= 0 {
-			writeErr(w, 400, fmt.Errorf("local_port and guest_port must be positive"))
+		if err := validPort(req.LocalPort); err != nil {
+			writeErr(w, 400, fmt.Errorf("local_port: %w", err))
+			return
+		}
+		if err := validPort(req.GuestPort); err != nil {
+			writeErr(w, 400, fmt.Errorf("guest_port: %w", err))
 			return
 		}
 		if m.IP == "" {
@@ -308,9 +319,17 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 400, fmt.Errorf("invalid local_port %q", r.PathValue("local_port")))
 			return
 		}
+		if err := validPort(localPort); err != nil {
+			writeErr(w, 400, fmt.Errorf("local_port: %w", err))
+			return
+		}
 		proto := r.URL.Query().Get("protocol")
 		if proto == "" {
 			proto = "tcp"
+		}
+		if proto != "tcp" && proto != "udp" {
+			writeErr(w, 400, fmt.Errorf("invalid protocol %q, want \"tcp\" or \"udp\"", proto))
+			return
 		}
 		local := fmt.Sprintf("127.0.0.1:%d", localPort)
 		if err := s.fwd.Unexpose(proto, local); err != nil {
