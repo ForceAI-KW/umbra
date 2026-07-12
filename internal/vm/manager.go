@@ -210,17 +210,21 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	i.mu.Unlock()
 
 	err := stopWithEscalation(ctx, handle, 30*time.Second, 60*time.Second)
-	if stopFn != nil {
-		stopFn()
-	}
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if err != nil {
 		i.state = StateCrashed
-		// handle intentionally NOT cleared: stop was never confirmed, so
-		// Start() must refuse until a future Stop() succeeds.
+		// Stop was never confirmed — the VM may still be alive. Keep the
+		// handle (so Start() refuses to double-launch, P9), the DNS entry,
+		// AND the network attachment (stopFn): severing the guest's network
+		// on a still-running zombie would be wrong. All are torn down only
+		// once a later Stop() confirms.
 		return err
+	}
+	// Confirmed stopped: tear everything down together.
+	if stopFn != nil {
+		stopFn() // netstack attach cleanup: cancel AcceptVfkit, close socket
 	}
 	i.state = StateStopped
 	i.ip = ""
