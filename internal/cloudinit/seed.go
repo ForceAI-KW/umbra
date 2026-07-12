@@ -176,12 +176,18 @@ func hostsRuncmdLines(hosts map[string]string) []string {
 // unauthenticated docker TCP API is root-equivalent access.
 func dockerRuncmdLines() []string {
 	return []string{
+		// Close the firewall on tcp:2375 BEFORE dockerd can bind it, so the
+		// unauthenticated API is never reachable subnet-wide (other guests,
+		// incl. an untrusted CI runner) even for the boot-time window.
+		fmt.Sprintf("iptables -A INPUT -p tcp --dport 2375 ! -s %s -j DROP", netstack.Gateway),
 		"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)",
 		"usermod -aG docker umbra",
 		"systemctl daemon-reload",
 		"systemctl enable --now docker",
-		"apt-get install -y iptables-persistent",
-		fmt.Sprintf("iptables -A INPUT -p tcp --dport 2375 ! -s %s -j DROP", netstack.Gateway),
+		// Persist the rule across reboots (iptables-persistent installs the
+		// netfilter-persistent save hook). DEBIAN_FRONTEND avoids the
+		// interactive "save current rules?" debconf prompt hanging boot.
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent",
 		"netfilter-persistent save",
 	}
 }
