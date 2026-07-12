@@ -119,3 +119,24 @@ The two highest-relevance findings for Umbra's architecture: **P1** (cgo Handle 
 ## Miner notes
 
 UTM's issue API 502/504'd during mining — not deep-mined. StackOverflow near-zero signal on this niche; GitHub issues + HN carried it all. All pitfalls corroborated across ≥3 independent URLs, mostly across different repos.
+
+## P13 — docker socket race: host connects before dockerd/bridge ready
+> **Addressed (M3):** `dockerbridge.WaitDockerReady` polls the Engine `/_ping` before `umbra docker start` returns / the socket bridge is wired — a named "dockerd" readiness stage.
+- Class of P10 (client races socket registration) applied to the docker VM. If `umbra docker start` returned as soon as the VM booted (before dockerd's TCP API accepts), the first `docker ps` would fail with a bare "cannot connect".
+
+## P14 — stale docker.sock on daemon restart
+> **Addressed (M3):** `dockerbridge.Listen` `os.Remove`s the socket path before bind.
+- A crash while the bridge holds `~/.umbra/run/docker.sock` leaves the file on disk; a naive `net.Listen("unix", path)` then fails with "address already in use".
+
+## P15 — docker context left pointing at a dead Umbra install
+> **Addressed (M3):** `umbra docker uninstall` runs `dockerctx.Remove` (falls back to the `default` context) before deleting the machine.
+- A dangling `umbra` context (its socket gone) makes every bare `docker` command fail until the user runs `docker context use default`.
+
+## P16 — docker0 bridge MTU vs a lower VPN path MTU (informational)
+- Docker's default bridge is MTU 1500 and does not auto-detect path MTU. Behind a corporate VPN with a lower path MTU, container `docker pull`/`apt` can black-hole. Manual fix if it bites: set `"mtu"` in the docker VM's `/etc/docker/daemon.json`. Not pre-solved (no VPN in the path most days).
+
+## P17 — container DNS depends on the docker VM's /etc/hosts + netplan being current
+> **Addressed (M3):** the docker VM is provisioned through the same shared path as every machine, so it is in the guest `/etc/hosts` map and its resolver points at the gateway (`192.168.127.1`) — container DNS resolves internet + `*.umbra.local` with no new code.
+
+## P18 — per-container `<container>.umbra.local` DNS + auto-published-port forwarding (DEFERRED)
+- The design spec's "docker-event-driven DNS + auto port forwarding" (watch the Docker events API, register `<container>.umbra.local`, auto-forward published ports) is a distinct larger feature layered on the M3 socket/context foundation. **Not implemented in M3** — deferred to a later milestone.
