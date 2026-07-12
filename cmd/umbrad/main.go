@@ -187,6 +187,34 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
+	// Supervisor watches for a sleep/wake gap and probes running machines'
+	// SSH health afterward; gvisor connections self-heal per-connection
+	// (P3/P11, no rebuild API), so this only detects + logs loudly, best
+	// effort and non-fatal. See internal/netstack/supervisor.go.
+	var supervisorWG sync.WaitGroup
+	supervisorWG.Add(1)
+	go func() {
+		defer supervisorWG.Done()
+		probe := func(ctx context.Context) []string {
+			var unhealthy []string
+			for _, info := range mgr.List() {
+				if info.State != vm.StateRunning || info.IP == "" {
+					continue
+				}
+				dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				c, err := st.DialContextTCP(dialCtx, net.JoinHostPort(info.IP, "22"))
+				cancel()
+				if err != nil {
+					unhealthy = append(unhealthy, info.Name)
+					continue
+				}
+				c.Close()
+			}
+			return unhealthy
+		}
+		netstack.NewSupervisor(probe).Run(daemonCtx)
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	select {
@@ -198,8 +226,9 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutting down", "signal", s.String())
 	}
 
-	daemonCancel()     // stop/short-circuit any in-flight or pending autostarts first
-	autostartWG.Wait() // let them exit before StopAll touches the same instances
+	daemonCancel()      // stop/short-circuit any in-flight or pending autostarts (and the supervisor) first
+	autostartWG.Wait()  // let them exit before StopAll touches the same instances
+	supervisorWG.Wait() // let the supervisor's Run return before StopAll touches the same instances
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
