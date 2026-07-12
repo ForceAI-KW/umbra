@@ -10,16 +10,19 @@ final class CLIClientTests: XCTestCase {
         XCTAssertEqual(escaped, "a\\\"b\\\\c")
     }
 
-    // MARK: - openShellScript
+    // MARK: - shellCommandFileBody
 
-    func testOpenShellScriptContainsUmbraShellCommand() {
-        let script = openShellScript(machineName: "dev")
-        XCTAssertTrue(script.contains("do script \"umbra shell dev\""))
+    func testShellCommandFileBodyExecsAbsoluteUmbraShell() {
+        let body = shellCommandFileBody(umbraPath: "/usr/local/bin/umbra", machineName: "dev")
+        XCTAssertTrue(body.hasPrefix("#!/bin/bash\n"))
+        XCTAssertTrue(body.contains("exec '/usr/local/bin/umbra' shell 'dev'"))
     }
 
-    func testOpenShellScriptEscapesQuoteInMachineName() {
-        let script = openShellScript(machineName: "de\"v")
-        XCTAssertTrue(script.contains("umbra shell de\\\"v"))
+    func testShellCommandFileBodySingleQuotesName() {
+        // A name containing a single quote must be escaped ('→'\'') so it can't
+        // break out of the shell-quoted argument.
+        let body = shellCommandFileBody(umbraPath: "/usr/local/bin/umbra", machineName: "de'v")
+        XCTAssertTrue(body.contains("shell 'de'\\''v'"))
     }
 
     // MARK: - resolveCLIPath

@@ -158,14 +158,17 @@ func appleScriptEscape(_ s: String) -> String {
         .replacingOccurrences(of: "\"", with: "\\\"")
 }
 
-/// AppleScript that opens Terminal.app running `umbra shell <machineName>`.
-/// Delegates to the CLI's own `umbra shell` (`cmd/umbra/shell.go`) rather than
-/// reconstructing the `ssh` invocation here, so the exact args live once.
-/// See docs/research/menubar-app.md §5.
-func openShellScript(machineName: String) -> String {
-    let sshCmd = "umbra shell \(machineName)"
-    let escaped = appleScriptEscape(sshCmd)
-    return "tell application \"Terminal\" to do script \"\(escaped)\""
+/// Body of a `.command` launcher that runs `umbra shell <machineName>` in
+/// Terminal. Opening a `.command` file starts Terminal via a normal file-open
+/// — it needs NONE of the Apple Events ("control Terminal") permission that a
+/// `tell application "Terminal"` script requires. An ad-hoc-signed app can't
+/// reliably obtain that Automation grant, which is why the old AppleScript
+/// Shell handoff silently did nothing. `umbraPath` is the resolved ABSOLUTE
+/// CLI path (a fresh Terminal doesn't inherit the app's PATH); both it and the
+/// machine name are single-quoted for the shell. Delegates to the CLI's own
+/// `umbra shell` (`cmd/umbra/shell.go`) so the ssh args live in one place.
+func shellCommandFileBody(umbraPath: String, machineName: String) -> String {
+    "#!/bin/bash\nexec \(shellQuote(umbraPath)) shell \(shellQuote(machineName))\n"
 }
 
 /// Typed wrappers over `runUmbra`, used by the app's view model. No business
@@ -265,26 +268,30 @@ struct CLI {
         try await daemonInstall(binPath: "\(binDir)/umbrad")
     }
 
-    /// Best-effort: hands off to Terminal.app via in-process AppleScript
-    /// (`NSAppleScript`, not an `osascript` subprocess). Logs and swallows
-    /// errors rather than throwing — a failed shell handoff shouldn't crash
-    /// the popover's action flow.
-    ///
-    /// Runs the AppleScript OFF the main actor: `executeAndReturnError` is a
-    /// blocking Apple Event that can stall for seconds on a cold Terminal
-    /// launch or while the "Umbra wants to control Terminal" Automation prompt
-    /// is up — doing it on the main actor would freeze the SwiftUI popover.
+    /// Best-effort: opens `umbra shell <machineName>` in Terminal by writing a
+    /// `.command` launcher to ~/.umbra/run and handing it to `open`. This
+    /// deliberately AVOIDS `tell application "Terminal"` (Apple Events), whose
+    /// Automation permission an ad-hoc-signed app can't reliably get — that gap
+    /// made the Shell button silently do nothing. Runs off the main actor and
+    /// logs/swallows errors rather than throwing.
     nonisolated func openShell(machineName: String) {
-        let script = openShellScript(machineName: machineName)
+        let runDir = ("~/.umbra/run" as NSString).expandingTildeInPath
+        // Filesystem-safe file name; the real (create-time-validated) machine
+        // name still goes into the script body, single-quoted.
+        let safeName = machineName.replacingOccurrences(of: "/", with: "_")
+        let scriptPath = (runDir as NSString).appendingPathComponent("shell-\(safeName).command")
+        let body = shellCommandFileBody(umbraPath: path, machineName: machineName)
         Task.detached {
-            guard let appleScript = NSAppleScript(source: script) else {
-                FileHandle.standardError.write(Data("openShell: failed to construct NSAppleScript\n".utf8))
-                return
-            }
-            var errorInfo: NSDictionary?
-            appleScript.executeAndReturnError(&errorInfo)
-            if let errorInfo {
-                FileHandle.standardError.write(Data("openShell: AppleScript error: \(errorInfo)\n".utf8))
+            do {
+                try FileManager.default.createDirectory(atPath: runDir, withIntermediateDirectories: true)
+                try body.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                proc.arguments = [scriptPath]
+                try proc.run()
+            } catch {
+                FileHandle.standardError.write(Data("openShell: \(error)\n".utf8))
             }
         }
     }
