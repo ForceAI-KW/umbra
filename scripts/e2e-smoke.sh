@@ -3,13 +3,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-export UMBRA_ROOT="${UMBRA_ROOT:-$(mktemp -d /tmp/umbra-e2e.XXXXXX)}"
+CREATED_ROOT=0
+if [ -z "${UMBRA_ROOT:-}" ]; then
+  UMBRA_ROOT="$(mktemp -d /tmp/umbra-e2e.XXXXXX)"
+  CREATED_ROOT=1
+fi
+export UMBRA_ROOT
 echo "UMBRA_ROOT=$UMBRA_ROOT"
 make build
 
 ./bin/umbrad &
 DAEMON_PID=$!
-trap 'kill $DAEMON_PID 2>/dev/null || true; rm -rf "$UMBRA_ROOT"' EXIT
+cleanup() {
+  kill "$DAEMON_PID" 2>/dev/null || true
+  wait "$DAEMON_PID" 2>/dev/null || true   # let StopAll finish before any rm
+  [ "$CREATED_ROOT" = 1 ] && rm -rf "$UMBRA_ROOT"
+}
+trap cleanup EXIT
 
 ./bin/umbra status            # exercises client retry until socket is up (P10)
 
@@ -25,9 +35,8 @@ ARCH=$(./bin/umbra shell e2e -- uname -m)
 
 # stop is verified, not fire-and-forget (P8/P9)
 ./bin/umbra stop e2e
-STATE=$(./bin/umbra status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["machines"][0]["state"])')
+STATE=$(./bin/umbra status --json | python3 -c 'import json,sys; print(next(m for m in json.load(sys.stdin)["machines"] if m["name"]=="e2e")["state"])')
 [ "$STATE" = "stopped" ] || { echo "FAIL: state=$STATE"; exit 1; }
 
 ./bin/umbra rm e2e
-kill $DAEMON_PID; wait $DAEMON_PID 2>/dev/null || true
 echo "E2E SMOKE: PASS"
