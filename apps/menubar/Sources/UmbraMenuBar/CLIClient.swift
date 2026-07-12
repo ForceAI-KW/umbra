@@ -9,12 +9,32 @@ enum CLIError: Error {
     case spawnFailed(Error)
 }
 
+extension CLIError: LocalizedError {
+    /// Human-readable message for surfacing in the UI (Settings/Onboarding),
+    /// rather than the generic "operation couldn't be completed" `Error`
+    /// default `localizedDescription` would otherwise produce.
+    var errorDescription: String? {
+        switch self {
+        case .nonZeroExit(let status, let message):
+            return message.isEmpty ? "Command exited with status \(status)." : message
+        case .spawnFailed(let underlying):
+            return "Failed to launch process: \(underlying.localizedDescription)"
+        }
+    }
+}
+
 /// Resolution order for the `umbra` CLI binary, first existing path wins.
 /// See docs/research/menubar-app.md §2b. `Process` does not inherit the
 /// invoking user's shell `PATH`, so every candidate must be an absolute path.
+/// The Settings "Advanced" tab's CLI path override (stored under the
+/// `"cliPathOverride"` UserDefaults key via `@AppStorage`) is checked FIRST,
+/// ahead of the bundled binary, so it always wins when set.
 func umbraCLIPath() -> String? {
     var candidates: [String] = []
 
+    if let override = UserDefaults.standard.string(forKey: "cliPathOverride"), !override.isEmpty {
+        candidates.append(override)
+    }
     if let bundled = Bundle.main.url(forAuxiliaryExecutable: "umbra")?.path {
         candidates.append(bundled)
     }
@@ -132,6 +152,29 @@ func appleScriptEscape(_ s: String) -> String {
         .replacingOccurrences(of: "\"", with: "\\\"")
 }
 
+/// Content written to `/etc/resolver/umbra.local` (Settings → Advanced →
+/// "Install /etc/resolver/umbra.local"), routing `.local` DNS queries
+/// through the daemon's embedded resolver on Umbra's VM subnet. Split out as
+/// a pure function so tests can assert the exact content without shelling out.
+func resolverFileContent() -> String {
+    "nameserver 192.168.127.1\nport 53\n"
+}
+
+/// Pure helper: the shell command (mkdir + printf/tee) that writes
+/// `resolverFileContent()` to `/etc/resolver/umbra.local`. Mirrors
+/// `adminInstallShellCommand`'s structure; `/etc/resolver` is root-owned so
+/// this always runs under the admin-privileges AppleScript below.
+func installResolverShellCommand() -> String {
+    "mkdir -p /etc/resolver && printf \(shellQuote(resolverFileContent())) | tee /etc/resolver/umbra.local > /dev/null"
+}
+
+/// AppleScript that requests one administrator-privileges elevation to run
+/// `installResolverShellCommand`, same escaping pattern as `adminInstallScript`.
+func installResolverScript() -> String {
+    let escaped = appleScriptEscape(installResolverShellCommand())
+    return "do shell script \"\(escaped)\" with administrator privileges"
+}
+
 /// AppleScript that opens Terminal.app running `umbra shell <machineName>`.
 /// Delegates to the CLI's own `umbra shell` (`cmd/umbra/shell.go`) rather than
 /// reconstructing the `ssh` invocation here, so the exact args live once.
@@ -229,6 +272,13 @@ struct CLI {
         }
 
         try await daemonInstall(binPath: "\(binDir)/umbrad")
+    }
+
+    /// Writes `/etc/resolver/umbra.local` via a single administrator-privileges
+    /// `osascript` elevation (Settings → Advanced). Best-effort/one-shot: the
+    /// caller (StatusModel) surfaces any thrown error rather than retrying.
+    func installResolverEntry() async throws {
+        _ = try await runProcess("/usr/bin/osascript", ["-e", installResolverScript()])
     }
 
     /// Best-effort: hands off to Terminal.app via in-process AppleScript

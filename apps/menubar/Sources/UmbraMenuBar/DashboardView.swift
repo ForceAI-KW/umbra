@@ -17,7 +17,7 @@ struct DashboardView: View {
     var body: some View {
         Group {
             if model.onboardingNeeded {
-                OnboardingPlaceholder()
+                OnboardingView()
             } else {
                 splitView
             }
@@ -202,23 +202,5 @@ func rosettaLabel(_ status: String) -> String {
     case "notInstalled": return "not installed"
     case "notSupported": return "not supported"
     default: return "—"
-    }
-}
-
-/// Placeholder shown while `model.onboardingNeeded` is true (daemon
-/// unreachable or CLI missing). T4 replaces this with the real
-/// OnboardingView first-run install flow; kept as its own small struct so
-/// that swap is a self-contained diff.
-struct OnboardingPlaceholder: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Text("Umbra daemon not installed")
-                .font(.title2)
-                .bold()
-            Text("First-run setup arrives in the next build")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 }

@@ -16,6 +16,17 @@ final class StatusModel: ObservableObject {
     /// half of `onboardingNeeded`. Read by the future Settings pane; no UI
     /// consumes it yet.
     @Published var daemonInstalled: Bool = false
+    /// True while `installDaemon()`'s bundle-copy + daemon-install is in
+    /// flight — drives the Onboarding view's spinner/disabled button.
+    @Published var installing: Bool = false
+    /// Last error from `installDaemon()` (onboarding) or `restartDaemon()`
+    /// (Settings → Daemon), surfaced to the user instead of swallowed. `nil`
+    /// once an action succeeds.
+    @Published var installError: String?
+    /// Last error from `installResolverEntry()` (Settings → Advanced), kept
+    /// separate from `installError` so an Advanced-tab failure doesn't bleed
+    /// into the Onboarding/Daemon-tab error display.
+    @Published var resolverError: String?
 
     /// Standard install location LaunchAgent's `--bin` points at (§3,
     /// docs/research/full-app-and-dmg.md — Option A), also what
@@ -138,8 +149,13 @@ final class StatusModel: ObservableObject {
     /// Re-registers the LaunchAgent against the standard install path —
     /// a Settings-pane "reinstall daemon" action for after a rebuild
     /// replaces `/usr/local/bin/umbrad` (docs/research/full-app-and-dmg.md §6).
+    /// Re-registers the LaunchAgent against the standard install path (already
+    /// on PATH at `/usr/local/bin/umbrad`) — the Settings → Daemon "Install"
+    /// button, as distinct from `installDaemon()`'s bundle-copy onboarding flow.
     func daemonInstall() async {
         guard let cli else { return }
+        busy.insert("daemon")
+        defer { busy.remove("daemon") }
         do {
             try await cli.daemonInstall(binPath: Self.installedUmbradPath)
         } catch {
@@ -150,6 +166,8 @@ final class StatusModel: ObservableObject {
 
     func daemonUninstall() async {
         guard let cli else { return }
+        busy.insert("daemon")
+        defer { busy.remove("daemon") }
         do {
             try await cli.daemonUninstall()
         } catch {
@@ -158,23 +176,68 @@ final class StatusModel: ObservableObject {
         await refresh()
     }
 
+    /// Settings → Daemon "Restart": uninstalls then re-installs the LaunchAgent
+    /// against the standard `/usr/local/bin/umbrad` path. Unlike
+    /// `daemonInstall()`/`daemonUninstall()`, errors are surfaced via
+    /// `installError` rather than swallowed — this is a user-initiated repair
+    /// action, so silent failure would leave them with no signal to retry.
+    func restartDaemon() async {
+        guard let cli else { return }
+        busy.insert("daemon")
+        defer { busy.remove("daemon") }
+        installError = nil
+        try? await cli.daemonUninstall()
+        do {
+            try await cli.daemonInstall(binPath: Self.installedUmbradPath)
+            installError = nil
+        } catch {
+            installError = error.localizedDescription
+        }
+        await refresh()
+    }
+
     /// First-run onboarding install (§3, docs/research/full-app-and-dmg.md):
     /// resolves the bundled `umbra`/`umbrad`/entitlements and copies them to
     /// `/usr/local/bin` via `CLI.installToUsrLocal`, then registers the
-    /// LaunchAgent. No-op if any bundled resource is missing (dev builds run
-    /// via `swift run` have no app bundle to resolve these from).
+    /// LaunchAgent. Sets `installError` (instead of silently swallowing) when
+    /// the bundled resources are missing (dev builds run via `swift run` have
+    /// no app bundle to resolve these from) or when the install itself fails.
     func installDaemon() async {
-        guard let cli else { return }
+        installing = true
+        installError = nil
+        defer { installing = false }
+
+        guard let cli else {
+            installError = "umbra CLI not found."
+            return
+        }
         guard let bundledUmbra = Bundle.main.url(forAuxiliaryExecutable: "umbra")?.path,
               let bundledUmbrad = Bundle.main.url(forAuxiliaryExecutable: "umbrad")?.path,
               let entitlements = Bundle.main.url(forResource: "vz", withExtension: "entitlements")?.path
-        else { return }
+        else {
+            installError = "Bundled umbra/umbrad binaries not found in this build."
+            return
+        }
         do {
             try await cli.installToUsrLocal(bundledUmbra: bundledUmbra, bundledUmbrad: bundledUmbrad, entitlements: entitlements)
+            installError = nil
         } catch {
-            // Best-effort, same rationale as toggleMachine.
+            installError = error.localizedDescription
         }
         await refresh()
+    }
+
+    /// Settings → Advanced "Install /etc/resolver/umbra.local": best-effort,
+    /// one `osascript` administrator elevation. Errors surface via
+    /// `resolverError` (kept separate from `installError`, see its doc comment).
+    func installResolverEntry() async {
+        guard let cli else { return }
+        resolverError = nil
+        do {
+            try await cli.installResolverEntry()
+        } catch {
+            resolverError = error.localizedDescription
+        }
     }
 
     /// Starts a stopped/crashed machine, or stops a running one. Marks the
