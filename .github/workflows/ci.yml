@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25' }
+        with: { go-version: '1.25', check-latest: true }
       - run: make lint
   unit:
     runs-on: macos-14
@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25' }
+        with: { go-version: '1.25', check-latest: true }
       - run: go test ./... -count=1
   build:
     runs-on: macos-14
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25' }
+        with: { go-version: '1.25', check-latest: true }
       - run: make build
   vuln:
     runs-on: macos-14
@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25' }
+        with: { go-version: '1.25', check-latest: true }
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
   gitleaks:
     runs-on: ubuntu-latest
@@ -44,8 +44,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
-        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+      # gitleaks CLI directly (MIT) — gitleaks-action v2 requires a paid
+      # license for org repos; the CLI scan is identical.
+      - name: gitleaks full-history scan
+        run: |
+          curl -sSL -o /tmp/gitleaks.tar.gz             https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact -v
   notify-failure:
     needs: [lint, unit, build, vuln, gitleaks]
     if: failure() && github.ref == 'refs/heads/main' && github.event_name == 'push'
