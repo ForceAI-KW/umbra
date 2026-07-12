@@ -104,7 +104,9 @@ Name **Umbra** (Ahmad, 2026-07-11) — the darkest core of a shadow; VMs running
 3. **M3 — Docker**: dedicated dockerd VM + socket bridge + `umbra` docker context. ✅ **DONE 2026-07-12** (bridge streaming-truncation bug found live + fixed; integration passed end-to-end once, re-runs flaky under overnight memory pressure — env not code; per-container DNS/auto-forward P18 deferred).
 4. **M4 — Autostart + fwb-ci cutover**: launchd LaunchAgent + flock single-instance guard + `umbra daemon` group; ci-runner role + cutover kit (install-runner.sh, verify workflow, runbook). ✅ **DONE 2026-07-12** (code+kit; live-org runner registration + fwb-ci2 boot + the deregister/uninstall cutover are Ahmad's human-gated runbook, docs/runbooks/ci-cutover.md).
 5. **M5 — Menu bar app**: SwiftUI MenuBarExtra thin client shelling out to the umbra CLI (status, start/stop, docker toggle, open shell). ✅ **DONE 2026-07-12** (SPM + make app; launches as an LSUIElement agent; verified live).
-6. **M6 — Rosetta + OSS release**: Rosetta share, README/docs, CI, signed release artifacts, publish under `ForceAI-KW`.
+6. **M6 — Rosetta + OSS release**: Rosetta share, README/docs, CI, signed release artifacts, publish under `ForceAI-KW`. ✅ **DONE 2026-07-12** (Rosetta VirtioFS share + F-flagged binfmt_misc handler, role-gated to docker/ci-runner machines, `umbra rosetta status`; `make release` tarball — ad-hoc signed binaries, no Developer ID/notarization, deliberately out of scope for local/OSS distribution; CONTRIBUTING.md + README polish).
+
+All 6 milestones complete — see [Definition of done](#definition-of-done-v1) below (publish-under-`ForceAI-KW` + the fwb-ci human-gated cutover remain Ahmad's runbook steps, per M4).
 
 **Cutover constraint:** OrbStack stays untouched and running until M4's green-CI verification passes. Zero CI downtime; no migration of the existing 26 GB OrbStack disk (runner setup is scripted, not migrated).
 
