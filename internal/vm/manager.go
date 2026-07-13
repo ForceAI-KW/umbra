@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	gonet "net"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -149,6 +150,16 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 		i.state = StateStopped // nothing launched yet; handle is still nil
 		i.mu.Unlock()
 		return err
+	}
+
+	// Orphan guard (2026-07-13): a SIGKILLed daemon leaves the previous VM's
+	// vz XPC alive holding disk.img; launching over it boot-loops and
+	// corrupts the guest. Reap verified vz orphans, refuse anything else.
+	if err := reapOrphanHolders(filepath.Join(m.machinesDir, name, "disk.img")); err != nil {
+		i.mu.Lock()
+		i.state = StateStopped // nothing launched; retry allowed after operator action
+		i.mu.Unlock()
+		return fmt.Errorf("start %s: %w", name, err)
 	}
 
 	h, stopFn, err := launchFn(cfg, m.machinesDir, m.net) // darwin-only; guarded inside
