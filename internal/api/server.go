@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
@@ -620,6 +621,19 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 409, fmt.Errorf("machine %q already exists", req.Name))
 			return
 		}
+		// req.StagingDir is caller-controlled (this is a JSON API reachable
+		// by any direct-socket caller, not just the CLI's own tar extraction
+		// path), so it must be confined under paths.Run() before it's used
+		// as a os.ReadFile/os.Rename source — otherwise a crafted request
+		// could read or move an arbitrary directory on the host. This is
+		// the one place server.go reaches into internal/paths: it's
+		// validating a request boundary, not resolving a machine file (that
+		// still always goes through s.reg.Dir, per the rest of this file).
+		clean := filepath.Clean(req.StagingDir)
+		if !strings.HasPrefix(clean, paths.Run()+string(os.PathSeparator)) {
+			writeErr(w, 400, fmt.Errorf("staging_dir must be under the run dir"))
+			return
+		}
 		// The CLI already extracted the tarball into StagingDir via
 		// export.Read (which enforces the config.json/disk.img allowlist,
 		// blocking path traversal) — read the config straight from there
@@ -634,6 +648,13 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 400, err)
 			return
 		}
+		// A direct-socket caller could hand us a staging dir with a
+		// config.json but no disk.img; without this the rename below would
+		// still "succeed" and register an unbootable machine.
+		if _, err := os.Stat(filepath.Join(req.StagingDir, "disk.img")); err != nil {
+			writeErr(w, 400, fmt.Errorf("staging dir missing disk.img: %w", err))
+			return
+		}
 		m.Name = req.Name
 		m.MAC = randomMAC() // never reuse the source host's MAC — same-subnet collision risk
 		m.IP = ""           // source host's lease is meaningless here; reallocated on first start
@@ -646,6 +667,12 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if err := s.reg.Save(&m); err != nil {
+			// The rename already succeeded, so the registry dir now holds
+			// the source host's original config.json (pre-name/MAC-rewrite)
+			// with no machine registered to own it: a retry would 409 on a
+			// name that doesn't actually work. Best-effort clean it up so a
+			// failed import leaves nothing half-registered behind.
+			_ = os.RemoveAll(s.reg.Dir(req.Name))
 			writeErr(w, 500, err)
 			return
 		}

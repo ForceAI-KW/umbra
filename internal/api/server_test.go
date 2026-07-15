@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
@@ -892,6 +893,19 @@ func TestRestoreOnReservedDockerNameReturns400(t *testing.T) {
 	}
 }
 
+// newImportStagingDir points UMBRA_ROOT (via t.Setenv) at a fresh temp dir
+// and returns a staging directory under paths.Run() — the import handler
+// requires staging_dir to live under the run dir, so every import test's
+// staging fixture must be rooted there rather than an arbitrary t.TempDir().
+func newImportStagingDir(t *testing.T) string {
+	t.Setenv("UMBRA_ROOT", t.TempDir())
+	dir := filepath.Join(paths.Run(), "staging")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // TestImportTakenNameReturns409 covers the same existing-name guard as
 // POST /v1/machines: importing into a name that's already registered must
 // not silently clobber it.
@@ -899,7 +913,7 @@ func TestImportTakenNameReturns409(t *testing.T) {
 	ts, reg, _ := newPatchTestServer(t)
 	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
 
-	staging := t.TempDir()
+	staging := newImportStagingDir(t)
 	if err := os.WriteFile(filepath.Join(staging, "config.json"),
 		[]byte(`{"name":"ci","cpus":2,"memory_mib":1024,"disk_gib":10,"mac":"aa:bb:cc:dd:ee:ff"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -922,7 +936,7 @@ func TestImportTakenNameReturns409(t *testing.T) {
 func TestImportHappyPathFreshMAC(t *testing.T) {
 	ts, reg, _ := newPatchTestServer(t)
 
-	staging := t.TempDir()
+	staging := newImportStagingDir(t)
 	const origMAC = "aa:bb:cc:dd:ee:ff"
 	cfg := fmt.Sprintf(`{"name":"orig","cpus":2,"memory_mib":1024,"disk_gib":10,"image":"ubuntu:noble","mac":%q}`, origMAC)
 	if err := os.WriteFile(filepath.Join(staging, "config.json"), []byte(cfg), 0o600); err != nil {
@@ -965,5 +979,112 @@ func TestImportHappyPathFreshMAC(t *testing.T) {
 	}
 	if _, err := os.Stat(staging); !os.IsNotExist(err) {
 		t.Fatalf("staging dir should have been renamed away, still exists (err=%v)", err)
+	}
+}
+
+// TestImportStagingDirOutsideRunDirReturns400 covers the staging_dir
+// boundary check: a direct-socket caller (not necessarily the CLI, which
+// always stages under paths.Run() itself) could point staging_dir anywhere
+// on disk. Without confining it under the run dir, the handler would happily
+// os.ReadFile/os.Rename an arbitrary directory.
+func TestImportStagingDirOutsideRunDirReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+	t.Setenv("UMBRA_ROOT", t.TempDir()) // so paths.Run() is deterministic, even though it's not used
+
+	outside := t.TempDir() // NOT under paths.Run()
+	if err := os.WriteFile(filepath.Join(outside, "config.json"),
+		[]byte(`{"name":"evil","cpus":2,"memory_mib":1024,"disk_gib":10}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "disk.img"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "evil", "staging_dir": outside})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+	// Nothing should have been touched: the source dir is untouched and no
+	// machine got registered.
+	if _, err := os.Stat(filepath.Join(outside, "config.json")); err != nil {
+		t.Fatalf("outside staging dir was touched: %v", err)
+	}
+}
+
+// TestImportStagingDirEvilPathReturns400 covers the same boundary check
+// with a literal traversal-style path, matching the review finding's
+// example.
+func TestImportStagingDirEvilPathReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+	t.Setenv("UMBRA_ROOT", t.TempDir())
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "evil", "staging_dir": "/tmp/evil"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestImportMissingDiskImgReturns400 covers the server-side disk.img
+// presence check: a direct-socket caller could stage a config.json without
+// a disk.img, which — if allowed through — would register an unbootable
+// machine.
+func TestImportMissingDiskImgReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	staging := newImportStagingDir(t)
+	if err := os.WriteFile(filepath.Join(staging, "config.json"),
+		[]byte(`{"name":"orig","cpus":2,"memory_mib":1024,"disk_gib":10}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// deliberately no disk.img
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "nodisk", "staging_dir": staging})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestImportSaveFailureRollsBackDir covers the non-atomic take-ownership
+// fix: if reg.Save fails after os.Rename already moved the staging dir into
+// place, the handler must remove the half-registered dir rather than leave
+// the source host's original (pre-rewrite) config.json sitting there under
+// the new name — which would make every retry falsely 409 on "already
+// exists" while never actually completing the import.
+func TestImportSaveFailureRollsBackDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based failure injection doesn't work as root")
+	}
+	ts, reg, _ := newPatchTestServer(t)
+
+	staging := newImportStagingDir(t)
+	if err := os.WriteFile(filepath.Join(staging, "config.json"),
+		[]byte(`{"name":"orig","cpus":2,"memory_mib":1024,"disk_gib":10}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "disk.img"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Strip write permission from the staging dir itself so that, once
+	// os.Rename moves it into place under the registry, reg.Save's
+	// os.WriteFile(tmp config.json) inside it fails — simulating a Save
+	// failure that happens strictly after the rename succeeded.
+	if err := os.Chmod(staging, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(staging, 0o700) })
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "broken", "staging_dir": staging})
+	if resp.StatusCode != 500 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 500, got %d body=%s", resp.StatusCode, body)
+	}
+	if _, err := reg.Load("broken"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("machine %q should not be registered after a failed import, Load err=%v", "broken", err)
+	}
+	if _, err := os.Stat(reg.Dir("broken")); !os.IsNotExist(err) {
+		t.Fatalf("machine dir %q should have been rolled back, stat err=%v", reg.Dir("broken"), err)
 	}
 }
