@@ -16,7 +16,6 @@ func Root() string {
 
 func Machines() string              { return filepath.Join(Root(), "machines") }
 func MachineDir(name string) string { return filepath.Join(Machines(), name) }
-func Snapshots(name string) string  { return filepath.Join(MachineDir(name), "snapshots") }
 func Images() string                { return filepath.Join(Root(), "images") }
 func Run() string                   { return filepath.Join(Root(), "run") }
 func Logs() string                  { return filepath.Join(Root(), "log") }

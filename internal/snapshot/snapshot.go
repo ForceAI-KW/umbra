@@ -106,7 +106,9 @@ func Restore(machineDir, snapDir, snapName string) error {
 	}
 	if err := cloneOrCopy(src, live); err != nil {
 		// bring the original back — never leave the machine diskless
-		os.Rename(backup, live)
+		if renameErr := os.Rename(backup, live); renameErr != nil {
+			return fmt.Errorf("restore failed (%v) AND recovery failed — machine %s may be diskless: %w", err, live, renameErr)
+		}
 		return err
 	}
 	os.Remove(backup)

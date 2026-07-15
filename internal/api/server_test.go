@@ -858,3 +858,35 @@ func TestRestoreMissingSnapshotReturns500(t *testing.T) {
 		t.Fatalf("want 500, got %d body=%s", resp.StatusCode, body)
 	}
 }
+
+// TestRestoreRejectsPathTraversalSnapshotName covers the same name
+// validation as snapshots/Take: a restore snapshot name reaching outside
+// this machine's own snapshots dir (e.g. into another machine's disk.img)
+// must be rejected before snapshot.Restore ever runs.
+func TestRestoreRejectsPathTraversalSnapshotName(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/restore", map[string]string{"name": "../evil"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestRestoreOnReservedDockerNameReturns400 covers the same reserved-name
+// guard as DELETE/PATCH: restore must not be allowed to race
+// dockerController.opMu by touching the docker VM's disk directly.
+func TestRestoreOnReservedDockerNameReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	resp := postJSON(t, ts.URL+"/v1/machines/docker/restore", map[string]string{"name": "s1"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}

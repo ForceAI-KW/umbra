@@ -155,6 +155,12 @@ func hostBuild() string {
 	return strings.TrimSpace(string(out))
 }
 
+// snapDir is the on-disk snapshots directory for a machine, shared by the
+// snapshots/list/restore handlers so the layout is defined in one place.
+func (s *Server) snapDir(name string) string {
+	return filepath.Join(s.reg.Dir(name), "snapshots")
+}
+
 func (s *Server) view(m *registry.Machine) MachineView {
 	info := s.lc.Info(m.Name)
 	return MachineView{Machine: *m, State: info.State, IP: info.IP, SSHPort: info.SSHPort, Zombie: info.Zombie}
@@ -544,7 +550,7 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 400, fmt.Errorf("invalid snapshot name"))
 			return
 		}
-		if err := snapshot.Take(s.reg.Dir(name), filepath.Join(s.reg.Dir(name), "snapshots"), req.Name); err != nil {
+		if err := snapshot.Take(s.reg.Dir(name), s.snapDir(name), req.Name); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
@@ -557,7 +563,7 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 404, err)
 			return
 		}
-		infos, err := snapshot.List(filepath.Join(s.reg.Dir(name), "snapshots"))
+		infos, err := snapshot.List(s.snapDir(name))
 		if err != nil {
 			writeErr(w, 500, err)
 			return
@@ -567,6 +573,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /v1/machines/{name}/restore", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
 		if _, err := s.reg.Load(name); err != nil {
 			writeErr(w, 404, err)
 			return
@@ -582,7 +592,11 @@ func (s *Server) Handler() http.Handler {
 			writeErr(w, 400, fmt.Errorf("snapshot name required"))
 			return
 		}
-		if err := snapshot.Restore(s.reg.Dir(name), filepath.Join(s.reg.Dir(name), "snapshots"), req.Name); err != nil {
+		if !registry.ValidName(req.Name) {
+			writeErr(w, 400, fmt.Errorf("invalid snapshot name"))
+			return
+		}
+		if err := snapshot.Restore(s.reg.Dir(name), s.snapDir(name), req.Name); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
