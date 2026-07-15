@@ -1031,10 +1031,10 @@ git commit -m "feat: umbra stats - live guest cpu/mem/swap/disk table"
 - Modify: `docs/superpowers/plans/2026-07-15-umbra-v2-core-upgrades.md` (tick boxes — the executor does this as it goes)
 
 **Steps:**
-- [ ] README: add `set / exec / snapshot / snapshots / restore / export / import / runner add|list|harden / prune / stats` to the command table with one-line descriptions (match existing table format).
-- [ ] `VERSION`: bump (e.g. `0.6.0` → `0.7.0`) — `make app` reads it.
-- [ ] Full local gate: `go test ./... && go vet ./... && make build`.
-- [ ] Commit: `docs: v0.7.0 command reference for v2 core upgrades`.
+- [x] README: add `set / exec / snapshot / snapshots / restore / export / import / runner add|list|harden / prune / stats` to the command table with one-line descriptions (match existing table format).
+- [x] `VERSION`: bump (e.g. `0.6.0` → `0.7.0`) — `make app` reads it.
+- [x] Full local gate: `go test ./... && go vet ./... && make build`.
+- [x] Commit: `docs: v0.7.0 command reference for v2 core upgrades`.
 
 ---
 
