@@ -40,7 +40,9 @@ bin/umbra create dev --cpus 4 --memory-gib 8 --disk-gib 60
 bin/umbra start dev                  # first run downloads Ubuntu 24.04 (~600MB, sha256-verified)
 bin/umbra shell dev                  # you're in Ubuntu; your Mac home is at /mnt/mac
 bin/umbra shell dev -- uname -m      # run a one-off command (aarch64)
+bin/umbra exec dev uname -m          # alias for `shell dev -- ...` (docker/kubectl muscle memory)
 bin/umbra list
+bin/umbra set dev --cpus 6 --memory-gib 12 --disk-gib 80 --autostart true  # resize (stopped only; disk only grows)
 bin/umbra stop dev                   # graceful ACPI → hard kill → CONFIRMED stopped
 bin/umbra rm dev
 bin/umbra status --json              # machine-readable probe (watchdog surface)
@@ -101,6 +103,23 @@ reachable by other guests (e.g. a CI runner).
 Not yet implemented (deferred): per-container `<name>.umbra.local` DNS and
 auto-forwarding of published container ports (design-spec "docker-event-driven"
 feature) — M3 delivers the VM + socket + context foundation.
+
+## Snapshots & migration
+
+```sh
+umbra snapshot dev pre-upgrade   # instant point-in-time snapshot of a stopped machine (APFS clone)
+umbra snapshots dev              # list a machine's snapshots
+umbra restore dev pre-upgrade    # restore a stopped machine's disk from a snapshot
+umbra export dev -o dev.tar.gz   # export a stopped machine's config + disk to a tarball
+umbra import dev.tar.gz --name dev2  # import a tarball produced by 'umbra export'
+```
+
+## Maintenance
+
+```sh
+umbra prune dev                  # reclaim guest disk: apt cache, docker prune, journal vacuum, fstrim
+umbra stats                      # live cpu/mem/swap/disk table across all machines
+```
 
 ## Rosetta / amd64 (M6)
 
@@ -167,7 +186,15 @@ A `ci-runner` role machine (`umbra create <name> --role ci-runner ...`) is a
 normal, GitHub-Actions-self-hosted-runner-flavored Umbra machine — provisioned
 with its own local-only dockerd (no shared docker VM, no network-exposed
 socket), used to run `ForceAI-KW`'s org-level self-hosted runners inside an
-Umbra guest instead of the existing OrbStack `fwb-ci` VM. The full cutover kit
+Umbra guest instead of the existing OrbStack `fwb-ci` VM.
+
+```sh
+umbra runner add fwb-ci2 --repo ForceAI-KW/fwb --count 2  # install + start N runner instances
+umbra runner list fwb-ci2 --repo ForceAI-KW/fwb            # local units + GitHub-side status
+umbra runner harden fwb-ci2                                # apply Restart=always watchdog to installed units
+```
+
+The full cutover kit
 — runner install script, a `workflow_dispatch`-only verify workflow template,
 and the human-gated cutover procedure — lives at:
 

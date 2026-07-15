@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ForceAI-KW/umbra/internal/registry"
+	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
 
@@ -38,6 +39,16 @@ type CreateRequest struct {
 	Image     string `json:"image"`
 	Autostart bool   `json:"autostart"`
 	Role      string `json:"role,omitempty"`
+}
+
+// UpdateRequest mirrors api.UpdateRequest; kept as its own type here so the
+// CLI doesn't import internal/api. Pointer fields distinguish "not provided"
+// from zero values.
+type UpdateRequest struct {
+	CPUs      *uint   `json:"cpus"`
+	MemoryMiB *uint64 `json:"memory_mib"`
+	DiskGiB   *uint64 `json:"disk_gib"`
+	Autostart *bool   `json:"autostart"`
 }
 
 // ForwardView mirrors api.ForwardView; kept as its own type here so the CLI
@@ -149,6 +160,10 @@ func (c *Client) GetMachine(ctx context.Context, name string) (*MachineView, err
 	var mv MachineView
 	return &mv, c.do(ctx, http.MethodGet, "/v1/machines/"+name, nil, &mv)
 }
+func (c *Client) UpdateMachine(ctx context.Context, name string, req UpdateRequest) (*MachineView, error) {
+	var mv MachineView
+	return &mv, c.do(ctx, http.MethodPatch, "/v1/machines/"+name, req, &mv)
+}
 func (c *Client) AddForward(ctx context.Context, name string, localPort, guestPort int, protocol string) (*ForwardView, error) {
 	var fv ForwardView
 	req := forwardRequest{LocalPort: localPort, GuestPort: guestPort, Protocol: protocol}
@@ -183,6 +198,30 @@ func (c *Client) DockerStatus(ctx context.Context) (*DockerStatus, error) {
 }
 func (c *Client) DockerUninstall(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/docker/uninstall", nil, nil)
+}
+
+func (c *Client) TakeSnapshot(ctx context.Context, machine, snap string) error {
+	return c.do(ctx, http.MethodPost, "/v1/machines/"+machine+"/snapshots", map[string]string{"name": snap}, nil)
+}
+func (c *Client) ListSnapshots(ctx context.Context, machine string) ([]snapshot.Info, error) {
+	var out []snapshot.Info
+	err := c.do(ctx, http.MethodGet, "/v1/machines/"+machine+"/snapshots", nil, &out)
+	return out, err
+}
+func (c *Client) RestoreSnapshot(ctx context.Context, machine, snap string) error {
+	return c.do(ctx, http.MethodPost, "/v1/machines/"+machine+"/restore", map[string]string{"name": snap}, nil)
+}
+
+// ImportMachine hands a locally-extracted machine directory (staged by the
+// CLI via internal/export.Read) over to the daemon, which takes ownership:
+// validates name, mints a fresh MAC, and moves the dir into its registry.
+func (c *Client) ImportMachine(ctx context.Context, name, stagingDir string) (*MachineView, error) {
+	var mv MachineView
+	req := struct {
+		Name       string `json:"name"`
+		StagingDir string `json:"staging_dir"`
+	}{Name: name, StagingDir: stagingDir}
+	return &mv, c.do(ctx, http.MethodPost, "/v1/machines/import", req, &mv)
 }
 
 // Rosetta returns the host's Rosetta-for-Linux availability:

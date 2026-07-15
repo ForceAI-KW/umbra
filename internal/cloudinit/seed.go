@@ -45,6 +45,29 @@ const dockerWriteFiles = `write_files:
       ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375
 `
 
+// ciRunnerWriteFiles renders the write_files entry for the ensure-docker
+// systemd oneshot. write_files runs before runcmd, so the unit file exists
+// by the time runcmd's `systemctl enable ensure-docker.service` runs.
+const ciRunnerWriteFiles = `write_files:
+  - path: /etc/systemd/system/ensure-docker.service
+    permissions: '0644'
+    content: |
+      # Reprovisions docker if a mid-cloud-init reboot interrupted
+      # get.docker.com (cloud-init runcmd is once-per-instance and won't
+      # retry). ConditionPathExists makes healthy boots a no-op.
+      [Unit]
+      Description=Ensure docker engine is installed
+      Wants=network-online.target
+      After=network-online.target
+      ConditionPathExists=!/usr/bin/docker
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/sh -c 'curl -fsSL https://get.docker.com | sh && usermod -aG docker umbra'
+      TimeoutStartSec=600
+      [Install]
+      WantedBy=multi-user.target
+`
+
 const metaDataTmpl = `instance-id: umbra-%s
 local-hostname: %s
 `
@@ -89,8 +112,11 @@ func BuildSeed(m *registry.Machine, machineDir, sshPub string, hosts map[string]
 	defer w.Cleanup()
 
 	writeFiles := ""
-	if m.Role == registry.ReservedDockerName {
+	switch m.Role {
+	case registry.ReservedDockerName:
 		writeFiles = dockerWriteFiles
+	case registry.RoleCIRunner:
+		writeFiles = ciRunnerWriteFiles
 	}
 	userData := fmt.Sprintf(userDataTmpl, sshPub, mountsSection(m.Role), writeFiles, runcmdSection(hosts, m.Role))
 	metaData := fmt.Sprintf(metaDataTmpl, m.Name, m.Name)
@@ -247,6 +273,14 @@ func ciRunnerRuncmdLines() []string {
 		"usermod -aG docker umbra",
 		"systemctl enable docker",
 		"systemctl restart docker",
+		// 4 GiB swap: a 3 GiB CI guest OOM-kills heavy jobs (eslint/next build,
+		// exit 137) AND takes the runner service down with them (2026-07-15
+		// incident). Swap makes peak jobs slow instead of dead.
+		`test -f /swapfile || (fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile)`,
+		`swapon /swapfile || true`,
+		`grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab`,
+		`systemctl daemon-reload`,
+		`systemctl enable ensure-docker.service`,
 	}
 }
 

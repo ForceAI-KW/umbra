@@ -5,12 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
+	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
+	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
 
@@ -617,6 +623,155 @@ func TestDockerStartBeforeInstallReturns500(t *testing.T) {
 	}
 }
 
+// newPatchTestServer builds a server with a directly-accessible registry and
+// fakeLC so PATCH tests can seed machine state (reg.Save/Load) and running
+// state (lc.states) without going through the HTTP create/start routes.
+func newPatchTestServer(t *testing.T) (*httptest.Server, *registry.Registry, *fakeLC) {
+	reg := registry.New(t.TempDir())
+	lc := &fakeLC{states: map[string]vm.State{}}
+	s := NewServer(reg, lc,
+		func(ctx context.Context, m *registry.Machine) error { return nil },
+		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
+		&fakeForwarder{}, &fakeDocker{}, func() string { return "installed" })
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts, reg, lc
+}
+
+func patchJSON(t *testing.T, url string, body string) *http.Response {
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// TestPatchMachineAutostartWhileRunning covers Task 2: autostart is mutable
+// even while the machine is running (unlike cpu/memory/disk).
+func TestPatchMachineAutostartWhileRunning(t *testing.T) {
+	ts, reg, lc := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	lc.states["ci"] = vm.StateRunning
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"autostart":true}`)
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("code=%d body=%s", resp.StatusCode, body)
+	}
+	m, err := reg.Load("ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Autostart {
+		t.Fatal("autostart not persisted")
+	}
+}
+
+// TestPatchMachineResizeRefusedWhileRunning covers Task 2: cpu/memory/disk
+// changes require the machine stopped — a running machine must 409.
+func TestPatchMachineResizeRefusedWhileRunning(t *testing.T) {
+	ts, reg, lc := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	lc.states["ci"] = vm.StateRunning
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"memory_mib":4096}`)
+	if resp.StatusCode != 409 {
+		t.Fatalf("want 409, got %d", resp.StatusCode)
+	}
+}
+
+// TestPatchMachineDiskShrinkRefused covers Task 2: disk can only grow, never
+// shrink (the guest filesystem can't be safely shrunk from the host side).
+func TestPatchMachineDiskShrinkRefused(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 60})
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"disk_gib":30}`)
+	if resp.StatusCode != 400 {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+// TestPatchMachineReservedDockerName covers Task 2 fix: PATCH must refuse
+// the reserved docker machine like DELETE does, before even attempting
+// reg.Load — so no fixture machine needs to exist.
+func TestPatchMachineReservedDockerName(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/docker", `{"autostart":true}`)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestPatchMachineZeroCPUsRejected and TestPatchMachineZeroMemoryRejected
+// cover Task 2 fix: an explicit zero value must 400, not silently persist
+// a machine with 0 vCPUs / 0 memory.
+func TestPatchMachineZeroCPUsRejected(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"cpus":0}`)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestPatchMachineZeroMemoryRejected(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"memory_mib":0}`)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestPatchMachineDiskGrowResizesImage covers Task 2 fix: disk.img must be
+// resolved through the server's own registry (reg.Dir), not the global
+// paths.MachineDir, so this test — using a registry rooted at t.TempDir() —
+// actually exercises the truncate against a fixture file instead of a real
+// path under ~/.umbra.
+func TestPatchMachineDiskGrowResizesImage(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 1})
+
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"disk_gib":2}`)
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("code=%d body=%s", resp.StatusCode, body)
+	}
+
+	fi, err := os.Stat(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 2<<30 {
+		t.Fatalf("disk.img size = %d, want %d", fi.Size(), int64(2)<<30)
+	}
+
+	m, err := reg.Load("ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.DiskGiB != 2 {
+		t.Fatalf("DiskGiB = %d, want 2", m.DiskGiB)
+	}
+}
+
 func TestRosettaStatus(t *testing.T) {
 	reg := registry.New(t.TempDir())
 	lc := &fakeLC{states: map[string]vm.State{}}
@@ -639,5 +794,310 @@ func TestRosettaStatus(t *testing.T) {
 	}
 	if out.Available != "notInstalled" {
 		t.Fatalf("available = %q, want notInstalled", out.Available)
+	}
+}
+
+// TestSnapshotWhileRunningReturns409 covers the same stopped-machine guard
+// as DELETE/PATCH resize: a running machine must refuse a snapshot request.
+func TestSnapshotWhileRunningReturns409(t *testing.T) {
+	ts, reg, lc := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	lc.states["ci"] = vm.StateRunning
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/snapshots", map[string]string{"name": "s1"})
+	if resp.StatusCode != 409 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 409, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestSnapshotThenListReturnsOneEntry covers the happy path: take a
+// snapshot of a stopped machine, then list it back.
+func TestSnapshotThenListReturnsOneEntry(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(reg.Dir("ci"), "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"name":"ci"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/snapshots", map[string]string{"name": "s1"})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("take: want 201, got %d body=%s", resp.StatusCode, body)
+	}
+
+	listResp, err := http.Get(ts.URL + "/v1/machines/ci/snapshots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var infos []snapshot.Info
+	if err := json.NewDecoder(listResp.Body).Decode(&infos); err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].Name != "s1" {
+		t.Fatalf("infos=%v", infos)
+	}
+}
+
+// TestSnapshotOnReservedDockerNameReturns400 covers the same reserved-name
+// guard as restore/DELETE/PATCH: snapshot take must not be allowed to race
+// dockerController.opMu by touching the docker VM's disk directly.
+func TestSnapshotOnReservedDockerNameReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	resp := postJSON(t, ts.URL+"/v1/machines/docker/snapshots", map[string]string{"name": "s1"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestRestoreMissingSnapshotReturns500 covers restoring a snapshot name
+// that was never taken.
+func TestRestoreMissingSnapshotReturns500(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/restore", map[string]string{"name": "nope"})
+	if resp.StatusCode != 500 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 500, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestRestoreRejectsPathTraversalSnapshotName covers the same name
+// validation as snapshots/Take: a restore snapshot name reaching outside
+// this machine's own snapshots dir (e.g. into another machine's disk.img)
+// must be rejected before snapshot.Restore ever runs.
+func TestRestoreRejectsPathTraversalSnapshotName(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/restore", map[string]string{"name": "../evil"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestRestoreOnReservedDockerNameReturns400 covers the same reserved-name
+// guard as DELETE/PATCH: restore must not be allowed to race
+// dockerController.opMu by touching the docker VM's disk directly.
+func TestRestoreOnReservedDockerNameReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	resp := postJSON(t, ts.URL+"/v1/machines/docker/restore", map[string]string{"name": "s1"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// newImportStagingDir points UMBRA_ROOT (via t.Setenv) at a fresh temp dir
+// and returns a staging directory under paths.Run() — the import handler
+// requires staging_dir to live under the run dir, so every import test's
+// staging fixture must be rooted there rather than an arbitrary t.TempDir().
+func newImportStagingDir(t *testing.T) string {
+	t.Setenv("UMBRA_ROOT", t.TempDir())
+	dir := filepath.Join(paths.Run(), "staging")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestImportTakenNameReturns409 covers the same existing-name guard as
+// POST /v1/machines: importing into a name that's already registered must
+// not silently clobber it.
+func TestImportTakenNameReturns409(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+
+	staging := newImportStagingDir(t)
+	if err := os.WriteFile(filepath.Join(staging, "config.json"),
+		[]byte(`{"name":"ci","cpus":2,"memory_mib":1024,"disk_gib":10,"mac":"aa:bb:cc:dd:ee:ff"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "disk.img"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "ci", "staging_dir": staging})
+	if resp.StatusCode != 409 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 409, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestImportHappyPathFreshMAC covers the happy path: importing a staged
+// tarball extraction creates the machine dir under the registry, persists
+// the requested name, and mints a fresh MAC (never reuses the source
+// host's, which would risk a same-subnet collision).
+func TestImportHappyPathFreshMAC(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+
+	staging := newImportStagingDir(t)
+	const origMAC = "aa:bb:cc:dd:ee:ff"
+	cfg := fmt.Sprintf(`{"name":"orig","cpus":2,"memory_mib":1024,"disk_gib":10,"image":"ubuntu:noble","mac":%q}`, origMAC)
+	if err := os.WriteFile(filepath.Join(staging, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "disk.img"), []byte("DISKDATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "restored", "staging_dir": staging})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 201, got %d body=%s", resp.StatusCode, body)
+	}
+	var mv MachineView
+	if err := json.NewDecoder(resp.Body).Decode(&mv); err != nil {
+		t.Fatal(err)
+	}
+	if mv.Name != "restored" {
+		t.Fatalf("name = %q, want restored", mv.Name)
+	}
+	if mv.MAC == origMAC {
+		t.Fatalf("MAC not regenerated: got the tarball's original MAC %q", mv.MAC)
+	}
+	if mv.IP != "" {
+		t.Fatalf("IP = %q, want cleared", mv.IP)
+	}
+
+	// The daemon took ownership: dir moved under the registry, config
+	// persisted with the new name/MAC, disk.img came along for the ride.
+	m, err := reg.Load("restored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.MAC != mv.MAC {
+		t.Fatalf("saved MAC %q != response MAC %q", m.MAC, mv.MAC)
+	}
+	if b, err := os.ReadFile(filepath.Join(reg.Dir("restored"), "disk.img")); err != nil || string(b) != "DISKDATA" {
+		t.Fatalf("disk.img not moved into registry: %q %v", b, err)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging dir should have been renamed away, still exists (err=%v)", err)
+	}
+}
+
+// TestImportStagingDirOutsideRunDirReturns400 covers the staging_dir
+// boundary check: a direct-socket caller (not necessarily the CLI, which
+// always stages under paths.Run() itself) could point staging_dir anywhere
+// on disk. Without confining it under the run dir, the handler would happily
+// os.ReadFile/os.Rename an arbitrary directory.
+func TestImportStagingDirOutsideRunDirReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+	t.Setenv("UMBRA_ROOT", t.TempDir()) // so paths.Run() is deterministic, even though it's not used
+
+	outside := t.TempDir() // NOT under paths.Run()
+	if err := os.WriteFile(filepath.Join(outside, "config.json"),
+		[]byte(`{"name":"evil","cpus":2,"memory_mib":1024,"disk_gib":10}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "disk.img"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "evil", "staging_dir": outside})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+	// Nothing should have been touched: the source dir is untouched and no
+	// machine got registered.
+	if _, err := os.Stat(filepath.Join(outside, "config.json")); err != nil {
+		t.Fatalf("outside staging dir was touched: %v", err)
+	}
+}
+
+// TestImportStagingDirEvilPathReturns400 covers the same boundary check
+// with a literal traversal-style path, matching the review finding's
+// example.
+func TestImportStagingDirEvilPathReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+	t.Setenv("UMBRA_ROOT", t.TempDir())
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "evil", "staging_dir": "/tmp/evil"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestImportMissingDiskImgReturns400 covers the server-side disk.img
+// presence check: a direct-socket caller could stage a config.json without
+// a disk.img, which — if allowed through — would register an unbootable
+// machine.
+func TestImportMissingDiskImgReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	staging := newImportStagingDir(t)
+	if err := os.WriteFile(filepath.Join(staging, "config.json"),
+		[]byte(`{"name":"orig","cpus":2,"memory_mib":1024,"disk_gib":10}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// deliberately no disk.img
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "nodisk", "staging_dir": staging})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestImportSaveFailureRollsBackDir covers the non-atomic take-ownership
+// fix: if reg.Save fails after os.Rename already moved the staging dir into
+// place, the handler must remove the half-registered dir rather than leave
+// the source host's original (pre-rewrite) config.json sitting there under
+// the new name — which would make every retry falsely 409 on "already
+// exists" while never actually completing the import.
+func TestImportSaveFailureRollsBackDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based failure injection doesn't work as root")
+	}
+	ts, reg, _ := newPatchTestServer(t)
+
+	staging := newImportStagingDir(t)
+	if err := os.WriteFile(filepath.Join(staging, "config.json"),
+		[]byte(`{"name":"orig","cpus":2,"memory_mib":1024,"disk_gib":10}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "disk.img"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Strip write permission from the staging dir itself so that, once
+	// os.Rename moves it into place under the registry, reg.Save's
+	// os.WriteFile(tmp config.json) inside it fails — simulating a Save
+	// failure that happens strictly after the rename succeeded.
+	if err := os.Chmod(staging, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(staging, 0o700) })
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "broken", "staging_dir": staging})
+	if resp.StatusCode != 500 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 500, got %d body=%s", resp.StatusCode, body)
+	}
+	if _, err := reg.Load("broken"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("machine %q should not be registered after a failed import, Load err=%v", "broken", err)
+	}
+	if _, err := os.Stat(reg.Dir("broken")); !os.IsNotExist(err) {
+		t.Fatalf("machine dir %q should have been rolled back, stat err=%v", reg.Dir("broken"), err)
 	}
 }

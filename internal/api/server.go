@@ -8,12 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
+	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
 
@@ -103,6 +107,17 @@ type CreateRequest struct {
 	Role      string `json:"role,omitempty"`
 }
 
+// UpdateRequest mutates machine config. Pointer fields distinguish
+// "not provided" from zero values. cpu/memory/disk require the machine
+// stopped; disk only grows (the guest filesystem must then be grown
+// inside the guest: sudo growpart /dev/vda 1 && sudo resize2fs /dev/vda1).
+type UpdateRequest struct {
+	CPUs      *uint   `json:"cpus"`
+	MemoryMiB *uint64 `json:"memory_mib"`
+	DiskGiB   *uint64 `json:"disk_gib"`
+	Autostart *bool   `json:"autostart"`
+}
+
 func validPort(p int) error {
 	if p < 1 || p > 65535 {
 		return fmt.Errorf("port %d out of range (1-65535)", p)
@@ -139,6 +154,12 @@ func hostBuild() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// snapDir is the on-disk snapshots directory for a machine, shared by the
+// snapshots/list/restore handlers so the layout is defined in one place.
+func (s *Server) snapDir(name string) string {
+	return filepath.Join(s.reg.Dir(name), "snapshots")
 }
 
 func (s *Server) view(m *registry.Machine) MachineView {
@@ -282,6 +303,70 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("PATCH /v1/machines/{name}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
+		m, err := s.reg.Load(name)
+		if err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		var req UpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		if req.CPUs != nil && *req.CPUs < 1 {
+			writeErr(w, 400, errors.New("cpus must be >= 1"))
+			return
+		}
+		if req.MemoryMiB != nil && *req.MemoryMiB < 128 {
+			writeErr(w, 400, errors.New("memory_mib must be >= 128"))
+			return
+		}
+		info := s.lc.Info(name)
+		resize := req.CPUs != nil || req.MemoryMiB != nil || req.DiskGiB != nil
+		if resize && (info.State == vm.StateRunning || info.Zombie) {
+			writeErr(w, 409, fmt.Errorf("machine %q must be stopped to change cpu/memory/disk", name))
+			return
+		}
+		if req.DiskGiB != nil && *req.DiskGiB < m.DiskGiB {
+			writeErr(w, 400, fmt.Errorf("disk can only grow (current %d GiB)", m.DiskGiB))
+			return
+		}
+		if req.CPUs != nil {
+			m.CPUs = *req.CPUs
+		}
+		if req.MemoryMiB != nil {
+			m.MemoryMiB = *req.MemoryMiB
+		}
+		if req.DiskGiB != nil && *req.DiskGiB > m.DiskGiB {
+			img := filepath.Join(s.reg.Dir(name), "disk.img")
+			if err := os.Truncate(img, int64(*req.DiskGiB)<<30); err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+			// If Save below fails after this truncate succeeds, disk.img on
+			// disk is left larger than the persisted DiskGiB. That's
+			// harmless: DiskGiB is only read at create/clone time to size a
+			// fresh disk.img, never to validate the existing file's actual
+			// size, so a retried grow just re-truncates to the same target
+			// size — idempotent.
+			m.DiskGiB = *req.DiskGiB
+		}
+		if req.Autostart != nil {
+			m.Autostart = *req.Autostart
+		}
+		if err := s.reg.Save(m); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, s.view(m))
 	})
 
 	mux.HandleFunc("POST /v1/machines/{name}/forwards", func(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +528,163 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /v1/rosetta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"available": s.rosetta()})
+	})
+
+	mux.HandleFunc("POST /v1/machines/{name}/snapshots", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
+		if _, err := s.reg.Load(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		if info := s.lc.Info(name); info.State == vm.StateRunning || info.Zombie {
+			writeErr(w, 409, fmt.Errorf("machine %q must be stopped to snapshot", name))
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+			writeErr(w, 400, fmt.Errorf("snapshot name required"))
+			return
+		}
+		if !registry.ValidName(req.Name) {
+			writeErr(w, 400, fmt.Errorf("invalid snapshot name"))
+			return
+		}
+		if err := snapshot.Take(s.reg.Dir(name), s.snapDir(name), req.Name); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(201)
+	})
+
+	mux.HandleFunc("GET /v1/machines/{name}/snapshots", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
+		if _, err := s.reg.Load(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		infos, err := snapshot.List(s.snapDir(name))
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, infos)
+	})
+
+	mux.HandleFunc("POST /v1/machines/{name}/restore", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
+		if _, err := s.reg.Load(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		if info := s.lc.Info(name); info.State == vm.StateRunning || info.Zombie {
+			writeErr(w, 409, fmt.Errorf("machine %q must be stopped to restore", name))
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+			writeErr(w, 400, fmt.Errorf("snapshot name required"))
+			return
+		}
+		if !registry.ValidName(req.Name) {
+			writeErr(w, 400, fmt.Errorf("invalid snapshot name"))
+			return
+		}
+		if err := snapshot.Restore(s.reg.Dir(name), s.snapDir(name), req.Name); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("POST /v1/machines/import", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name       string `json:"name"`
+			StagingDir string `json:"staging_dir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		if !registry.ValidName(req.Name) || registry.IsReserved(req.Name) {
+			writeErr(w, 400, fmt.Errorf("invalid machine name %q", req.Name))
+			return
+		}
+		if _, err := s.reg.Load(req.Name); err == nil {
+			writeErr(w, 409, fmt.Errorf("machine %q already exists", req.Name))
+			return
+		}
+		// req.StagingDir is caller-controlled (this is a JSON API reachable
+		// by any direct-socket caller, not just the CLI's own tar extraction
+		// path), so it must be confined under paths.Run() before it's used
+		// as a os.ReadFile/os.Rename source — otherwise a crafted request
+		// could read or move an arbitrary directory on the host. This is
+		// the one place server.go reaches into internal/paths: it's
+		// validating a request boundary, not resolving a machine file (that
+		// still always goes through s.reg.Dir, per the rest of this file).
+		clean := filepath.Clean(req.StagingDir)
+		if !strings.HasPrefix(clean, paths.Run()+string(os.PathSeparator)) {
+			writeErr(w, 400, fmt.Errorf("staging_dir must be under the run dir"))
+			return
+		}
+		// The CLI already extracted the tarball into StagingDir via
+		// export.Read (which enforces the config.json/disk.img allowlist,
+		// blocking path traversal) — read the config straight from there
+		// rather than re-parsing the tarball a second time.
+		b, err := os.ReadFile(filepath.Join(req.StagingDir, "config.json"))
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("staging dir missing config.json: %w", err))
+			return
+		}
+		var m registry.Machine
+		if err := json.Unmarshal(b, &m); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		// A direct-socket caller could hand us a staging dir with a
+		// config.json but no disk.img; without this the rename below would
+		// still "succeed" and register an unbootable machine.
+		if _, err := os.Stat(filepath.Join(req.StagingDir, "disk.img")); err != nil {
+			writeErr(w, 400, fmt.Errorf("staging dir missing disk.img: %w", err))
+			return
+		}
+		m.Name = req.Name
+		m.MAC = randomMAC() // never reuse the source host's MAC — same-subnet collision risk
+		m.IP = ""           // source host's lease is meaningless here; reallocated on first start
+		m.HostBuild = hostBuild()
+		m.CreatedAt = time.Now().UTC()
+		// os.Rename is same-volume (both StagingDir and s.reg.Dir live under
+		// paths.Root()) so taking ownership of the extracted dir is atomic.
+		if err := os.Rename(req.StagingDir, s.reg.Dir(req.Name)); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		if err := s.reg.Save(&m); err != nil {
+			// The rename already succeeded, so the registry dir now holds
+			// the source host's original config.json (pre-name/MAC-rewrite)
+			// with no machine registered to own it: a retry would 409 on a
+			// name that doesn't actually work. Best-effort clean it up so a
+			// failed import leaves nothing half-registered behind.
+			_ = os.RemoveAll(s.reg.Dir(req.Name))
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 201, s.view(&m))
 	})
 
 	return mux

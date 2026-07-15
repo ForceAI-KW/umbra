@@ -48,6 +48,15 @@ func (r *Registry) configPath(name string) string {
 	return filepath.Join(r.dir, name, "config.json")
 }
 
+// Dir returns the per-machine directory (holding config.json, disk.img,
+// etc.) under this registry's root. Exported so callers that need to touch
+// machine-owned files outside of Save/Load (e.g. resizing disk.img) resolve
+// paths through the same registry instance the server was constructed with,
+// instead of the global paths.MachineDir — which would silently diverge
+// from a test registry rooted at t.TempDir() and risk touching real files
+// under ~/.umbra.
+func (r *Registry) Dir(name string) string { return filepath.Join(r.dir, name) }
+
 func (r *Registry) Save(m *Machine) error {
 	if !ValidName(m.Name) {
 		return errors.New("invalid machine name: must match ^[a-z0-9][a-z0-9-]{0,31}$")

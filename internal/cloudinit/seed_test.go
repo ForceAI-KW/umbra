@@ -237,6 +237,36 @@ func TestBuildDockerSeedHasRosetta(t *testing.T) {
 	}
 }
 
+func TestCIRunnerUserDataProvisionsSwap(t *testing.T) {
+	dir := t.TempDir()
+	m := &registry.Machine{Name: "fwb-ci4", CPUs: 4, MemoryMiB: 8192, DiskGiB: 60, Image: "ubuntu:noble", IP: "192.168.127.50", Role: registry.RoleCIRunner}
+	iso, err := BuildSeed(m, dir, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := readISOFile(t, iso, "user-data")
+	for _, want := range []string{"fallocate -l 4G /swapfile", "mkswap /swapfile", "swapon /swapfile", "/swapfile none swap sw 0 0"} {
+		if !strings.Contains(ud, want) {
+			t.Fatalf("user-data missing %q:\n%s", want, ud)
+		}
+	}
+}
+
+func TestCIRunnerUserDataHasEnsureDockerUnit(t *testing.T) {
+	dir := t.TempDir()
+	m := &registry.Machine{Name: "fwb-ci5", CPUs: 4, MemoryMiB: 8192, DiskGiB: 60, Image: "ubuntu:noble", IP: "192.168.127.51", Role: registry.RoleCIRunner}
+	iso, err := BuildSeed(m, dir, "ssh-ed25519 AAAATEST umbra", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := readISOFile(t, iso, "user-data")
+	for _, want := range []string{"ensure-docker.service", "ConditionPathExists=!/usr/bin/docker", "systemctl enable ensure-docker.service"} {
+		if !strings.Contains(ud, want) {
+			t.Fatalf("user-data missing %q:\n%s", want, ud)
+		}
+	}
+}
+
 func readISOFile(t *testing.T, isoPath, name string) string {
 	t.Helper()
 	f, err := os.Open(isoPath)
