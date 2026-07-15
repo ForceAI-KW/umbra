@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -888,5 +889,81 @@ func TestRestoreOnReservedDockerNameReturns400(t *testing.T) {
 	if resp.StatusCode != 400 {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestImportTakenNameReturns409 covers the same existing-name guard as
+// POST /v1/machines: importing into a name that's already registered must
+// not silently clobber it.
+func TestImportTakenNameReturns409(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+
+	staging := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staging, "config.json"),
+		[]byte(`{"name":"ci","cpus":2,"memory_mib":1024,"disk_gib":10,"mac":"aa:bb:cc:dd:ee:ff"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "disk.img"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "ci", "staging_dir": staging})
+	if resp.StatusCode != 409 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 409, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestImportHappyPathFreshMAC covers the happy path: importing a staged
+// tarball extraction creates the machine dir under the registry, persists
+// the requested name, and mints a fresh MAC (never reuses the source
+// host's, which would risk a same-subnet collision).
+func TestImportHappyPathFreshMAC(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+
+	staging := t.TempDir()
+	const origMAC = "aa:bb:cc:dd:ee:ff"
+	cfg := fmt.Sprintf(`{"name":"orig","cpus":2,"memory_mib":1024,"disk_gib":10,"image":"ubuntu:noble","mac":%q}`, origMAC)
+	if err := os.WriteFile(filepath.Join(staging, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "disk.img"), []byte("DISKDATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/import", map[string]string{"name": "restored", "staging_dir": staging})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 201, got %d body=%s", resp.StatusCode, body)
+	}
+	var mv MachineView
+	if err := json.NewDecoder(resp.Body).Decode(&mv); err != nil {
+		t.Fatal(err)
+	}
+	if mv.Name != "restored" {
+		t.Fatalf("name = %q, want restored", mv.Name)
+	}
+	if mv.MAC == origMAC {
+		t.Fatalf("MAC not regenerated: got the tarball's original MAC %q", mv.MAC)
+	}
+	if mv.IP != "" {
+		t.Fatalf("IP = %q, want cleared", mv.IP)
+	}
+
+	// The daemon took ownership: dir moved under the registry, config
+	// persisted with the new name/MAC, disk.img came along for the ride.
+	m, err := reg.Load("restored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.MAC != mv.MAC {
+		t.Fatalf("saved MAC %q != response MAC %q", m.MAC, mv.MAC)
+	}
+	if b, err := os.ReadFile(filepath.Join(reg.Dir("restored"), "disk.img")); err != nil || string(b) != "DISKDATA" {
+		t.Fatalf("disk.img not moved into registry: %q %v", b, err)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging dir should have been renamed away, still exists (err=%v)", err)
 	}
 }

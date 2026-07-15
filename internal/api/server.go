@@ -603,5 +603,54 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(204)
 	})
 
+	mux.HandleFunc("POST /v1/machines/import", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name       string `json:"name"`
+			StagingDir string `json:"staging_dir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		if !registry.ValidName(req.Name) || registry.IsReserved(req.Name) {
+			writeErr(w, 400, fmt.Errorf("invalid machine name %q", req.Name))
+			return
+		}
+		if _, err := s.reg.Load(req.Name); err == nil {
+			writeErr(w, 409, fmt.Errorf("machine %q already exists", req.Name))
+			return
+		}
+		// The CLI already extracted the tarball into StagingDir via
+		// export.Read (which enforces the config.json/disk.img allowlist,
+		// blocking path traversal) — read the config straight from there
+		// rather than re-parsing the tarball a second time.
+		b, err := os.ReadFile(filepath.Join(req.StagingDir, "config.json"))
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("staging dir missing config.json: %w", err))
+			return
+		}
+		var m registry.Machine
+		if err := json.Unmarshal(b, &m); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		m.Name = req.Name
+		m.MAC = randomMAC() // never reuse the source host's MAC — same-subnet collision risk
+		m.IP = ""           // source host's lease is meaningless here; reallocated on first start
+		m.HostBuild = hostBuild()
+		m.CreatedAt = time.Now().UTC()
+		// os.Rename is same-volume (both StagingDir and s.reg.Dir live under
+		// paths.Root()) so taking ownership of the extracted dir is atomic.
+		if err := os.Rename(req.StagingDir, s.reg.Dir(req.Name)); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		if err := s.reg.Save(&m); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 201, s.view(&m))
+	})
+
 	return mux
 }

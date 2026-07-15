@@ -212,6 +212,18 @@ func (c *Client) RestoreSnapshot(ctx context.Context, machine, snap string) erro
 	return c.do(ctx, http.MethodPost, "/v1/machines/"+machine+"/restore", map[string]string{"name": snap}, nil)
 }
 
+// ImportMachine hands a locally-extracted machine directory (staged by the
+// CLI via internal/export.Read) over to the daemon, which takes ownership:
+// validates name, mints a fresh MAC, and moves the dir into its registry.
+func (c *Client) ImportMachine(ctx context.Context, name, stagingDir string) (*MachineView, error) {
+	var mv MachineView
+	req := struct {
+		Name       string `json:"name"`
+		StagingDir string `json:"staging_dir"`
+	}{Name: name, StagingDir: stagingDir}
+	return &mv, c.do(ctx, http.MethodPost, "/v1/machines/import", req, &mv)
+}
+
 // Rosetta returns the host's Rosetta-for-Linux availability:
 // "installed" / "notInstalled" / "notSupported".
 func (c *Client) Rosetta(ctx context.Context) (string, error) {
