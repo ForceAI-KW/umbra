@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
@@ -101,6 +104,17 @@ type CreateRequest struct {
 	Image     string `json:"image"`
 	Autostart bool   `json:"autostart"`
 	Role      string `json:"role,omitempty"`
+}
+
+// UpdateRequest mutates machine config. Pointer fields distinguish
+// "not provided" from zero values. cpu/memory/disk require the machine
+// stopped; disk only grows (the guest filesystem must then be grown
+// inside the guest: sudo growpart /dev/vda 1 && sudo resize2fs /dev/vda1).
+type UpdateRequest struct {
+	CPUs      *uint   `json:"cpus"`
+	MemoryMiB *uint64 `json:"memory_mib"`
+	DiskGiB   *uint64 `json:"disk_gib"`
+	Autostart *bool   `json:"autostart"`
 }
 
 func validPort(p int) error {
@@ -282,6 +296,52 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("PATCH /v1/machines/{name}", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		m, err := s.reg.Load(name)
+		if err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		var req UpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		info := s.lc.Info(name)
+		resize := req.CPUs != nil || req.MemoryMiB != nil || req.DiskGiB != nil
+		if resize && (info.State == vm.StateRunning || info.Zombie) {
+			writeErr(w, 409, fmt.Errorf("machine %q must be stopped to change cpu/memory/disk", name))
+			return
+		}
+		if req.DiskGiB != nil && *req.DiskGiB < m.DiskGiB {
+			writeErr(w, 400, fmt.Errorf("disk can only grow (current %d GiB)", m.DiskGiB))
+			return
+		}
+		if req.CPUs != nil {
+			m.CPUs = *req.CPUs
+		}
+		if req.MemoryMiB != nil {
+			m.MemoryMiB = *req.MemoryMiB
+		}
+		if req.DiskGiB != nil && *req.DiskGiB > m.DiskGiB {
+			img := filepath.Join(paths.MachineDir(name), "disk.img")
+			if err := os.Truncate(img, int64(*req.DiskGiB)<<30); err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+			m.DiskGiB = *req.DiskGiB
+		}
+		if req.Autostart != nil {
+			m.Autostart = *req.Autostart
+		}
+		if err := s.reg.Save(m); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, s.view(m))
 	})
 
 	mux.HandleFunc("POST /v1/machines/{name}/forwards", func(w http.ResponseWriter, r *http.Request) {

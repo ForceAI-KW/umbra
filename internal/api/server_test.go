@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -614,6 +615,80 @@ func TestDockerStartBeforeInstallReturns500(t *testing.T) {
 	resp := postJSON(t, ts.URL+"/v1/docker/start", nil)
 	if resp.StatusCode != 500 {
 		t.Fatalf("start before install: %d, want 500", resp.StatusCode)
+	}
+}
+
+// newPatchTestServer builds a server with a directly-accessible registry and
+// fakeLC so PATCH tests can seed machine state (reg.Save/Load) and running
+// state (lc.states) without going through the HTTP create/start routes.
+func newPatchTestServer(t *testing.T) (*httptest.Server, *registry.Registry, *fakeLC) {
+	reg := registry.New(t.TempDir())
+	lc := &fakeLC{states: map[string]vm.State{}}
+	s := NewServer(reg, lc,
+		func(ctx context.Context, m *registry.Machine) error { return nil },
+		func(ctx context.Context, m *registry.Machine) (string, error) { return "192.168.64.7", nil },
+		&fakeForwarder{}, &fakeDocker{}, func() string { return "installed" })
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts, reg, lc
+}
+
+func patchJSON(t *testing.T, url string, body string) *http.Response {
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// TestPatchMachineAutostartWhileRunning covers Task 2: autostart is mutable
+// even while the machine is running (unlike cpu/memory/disk).
+func TestPatchMachineAutostartWhileRunning(t *testing.T) {
+	ts, reg, lc := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	lc.states["ci"] = vm.StateRunning
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"autostart":true}`)
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("code=%d body=%s", resp.StatusCode, body)
+	}
+	m, err := reg.Load("ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Autostart {
+		t.Fatal("autostart not persisted")
+	}
+}
+
+// TestPatchMachineResizeRefusedWhileRunning covers Task 2: cpu/memory/disk
+// changes require the machine stopped — a running machine must 409.
+func TestPatchMachineResizeRefusedWhileRunning(t *testing.T) {
+	ts, reg, lc := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	lc.states["ci"] = vm.StateRunning
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"memory_mib":4096}`)
+	if resp.StatusCode != 409 {
+		t.Fatalf("want 409, got %d", resp.StatusCode)
+	}
+}
+
+// TestPatchMachineDiskShrinkRefused covers Task 2: disk can only grow, never
+// shrink (the guest filesystem can't be safely shrunk from the host side).
+func TestPatchMachineDiskShrinkRefused(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 60})
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"disk_gib":30}`)
+	if resp.StatusCode != 400 {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
 	}
 }
 

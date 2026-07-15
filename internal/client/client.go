@@ -40,6 +40,16 @@ type CreateRequest struct {
 	Role      string `json:"role,omitempty"`
 }
 
+// UpdateRequest mirrors api.UpdateRequest; kept as its own type here so the
+// CLI doesn't import internal/api. Pointer fields distinguish "not provided"
+// from zero values.
+type UpdateRequest struct {
+	CPUs      *uint   `json:"cpus"`
+	MemoryMiB *uint64 `json:"memory_mib"`
+	DiskGiB   *uint64 `json:"disk_gib"`
+	Autostart *bool   `json:"autostart"`
+}
+
 // ForwardView mirrors api.ForwardView; kept as its own type here so the CLI
 // doesn't import internal/api.
 type ForwardView struct {
@@ -148,6 +158,10 @@ func (c *Client) ListMachines(ctx context.Context) ([]MachineView, error) {
 func (c *Client) GetMachine(ctx context.Context, name string) (*MachineView, error) {
 	var mv MachineView
 	return &mv, c.do(ctx, http.MethodGet, "/v1/machines/"+name, nil, &mv)
+}
+func (c *Client) UpdateMachine(ctx context.Context, name string, req UpdateRequest) (*MachineView, error) {
+	var mv MachineView
+	return &mv, c.do(ctx, http.MethodPatch, "/v1/machines/"+name, req, &mv)
 }
 func (c *Client) AddForward(ctx context.Context, name string, localPort, guestPort int, protocol string) (*ForwardView, error) {
 	var fv ForwardView
