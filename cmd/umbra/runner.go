@@ -85,6 +85,12 @@ func ghRegistrationToken(repo string) (string, error) {
 // streamScript ssh's into the machine and pipes script into 'bash -s' on
 // stdin, the same connection shell/exec use (via the shared sshArgs
 // helper), returning the combined stdout+stderr for diagnostics.
+//
+// NOTE: this prints the guest's combined stdout+stderr straight to the
+// user on both success and failure (see the streamScript call sites
+// below) — never add `set -x` or token-echoing to InstallScript/
+// HardenScript in internal/runner/script.go, or the registration token
+// leaks into this output.
 func streamScript(ctx context.Context, mv *client.MachineView, script string) (string, error) {
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
@@ -123,6 +129,23 @@ func runRunnerAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--count must be >= 1")
 	}
 
+	// Validate every value that will be fmt.Sprintf'd unescaped into
+	// InstallScript's double-quoted bash contexts BEFORE it reaches
+	// runner.InstallParams. This is the real gate against shell injection
+	// (a "--repo" or "--name"/"--labels" containing '"', a backtick, or
+	// "$(...)" would otherwise break out of the quotes and run as the
+	// umbra guest user) — InstallScript's own quoting is defense in depth
+	// only, not sufficient on its own. See runner.ValidRepo/ValidRunnerField.
+	if !runner.ValidRepo(runnerAddRepo) {
+		return fmt.Errorf("--repo %q is invalid: must look like org/repo using only letters, digits, '.', '_', '-'", runnerAddRepo)
+	}
+	if !runner.ValidRunnerField(runnerAddLabels) {
+		return fmt.Errorf("--labels %q is invalid: only letters, digits, ',', '.', '_', '-' allowed", runnerAddLabels)
+	}
+	if runnerAddName != "" && !runner.ValidRunnerField(runnerAddName) {
+		return fmt.Errorf("--name %q is invalid: only letters, digits, '.', '_', '-' allowed", runnerAddName)
+	}
+
 	token, err := ghRegistrationToken(runnerAddRepo)
 	if err != nil {
 		return err
@@ -141,6 +164,16 @@ func runRunnerAdd(cmd *cobra.Command, args []string) error {
 	for i := 1; i <= runnerAddCount; i++ {
 		name := fmt.Sprintf("%s-%d", namePrefix, i)
 		dir := fmt.Sprintf("actions-runner-%s-%d", repoBase, i)
+		// Defense in depth: name/dir are built from already-validated
+		// --repo/--name plus a numeric loop index, so they should always
+		// pass, but re-check the derived values in case that derivation
+		// ever changes.
+		if !runner.ValidRunnerField(name) {
+			return fmt.Errorf("derived runner name %q is invalid: only letters, digits, ',', '.', '_', '-' allowed", name)
+		}
+		if !runner.ValidRunnerField(dir) {
+			return fmt.Errorf("derived runner directory %q is invalid: only letters, digits, ',', '.', '_', '-' allowed", dir)
+		}
 		script := runner.InstallScript(runner.InstallParams{
 			RepoURL:    repoURL,
 			Token:      token,
@@ -172,6 +205,12 @@ func runRunnerList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// 'actions.runner.*' stays single-quoted here on purpose: sshArgs joins
+	// this into one remote command string, so the single quotes travel over
+	// the wire and get reparsed by the REMOTE shell, not this local one —
+	// that's what stops the glob from expanding against local files (or the
+	// empty string, if none match) before it ever reaches systemctl on the
+	// guest. Don't "simplify" this to an unquoted or double-quoted glob.
 	sArgs := sshArgs(mv, []string{"systemctl", "list-units", `'actions.runner.*'`, "--no-legend"})
 	out, err := exec.CommandContext(cmd.Context(), sshPath, sArgs[1:]...).CombinedOutput()
 	if err != nil {

@@ -39,6 +39,11 @@ type InstallParams struct {
 // The token is inlined directly into the generated script rather than read
 // from the caller's environment — the script is self-contained and must not
 // depend on $REG_TOKEN (or any other env var) being set on the remote side.
+//
+// NOTE: never add `set -x` (or any other echoing of $TOKEN/config.sh output)
+// to this script. cmd/umbra/runner.go's streamScript prints the guest's
+// combined stdout+stderr straight to the user on both success and failure,
+// so anything this script echoes is not private.
 func InstallScript(p InstallParams) string {
 	version := p.Version
 	if version == "" {
