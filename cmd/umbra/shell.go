@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ForceAI-KW/umbra/internal/client"
 	"github.com/ForceAI-KW/umbra/internal/paths"
 )
 
@@ -18,6 +19,26 @@ var shellCmd = &cobra.Command{
 	Short: "Open a shell (or run a command) in a machine",
 	Args:  cobra.MinimumNArgs(1),
 	RunE:  runShell,
+}
+
+// sshArgs builds the ssh argv (including argv[0] "ssh") used to reach a
+// running machine's guest — the daemon forwards a loopback port to guest:22
+// while the machine runs, since the guest lives on the userspace netstack
+// the host can't route to directly. remoteCmd, if non-empty, is appended so
+// ssh runs it instead of opening an interactive shell. Shared by shell/exec
+// (interactive) and runner (streams a script over stdin into 'bash -s').
+func sshArgs(mv *client.MachineView, remoteCmd []string) []string {
+	args := []string{"ssh",
+		"-i", filepath.Join(paths.SSH(), "id_ed25519"),
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "UserKnownHostsFile=" + filepath.Join(paths.SSH(), "known_hosts"),
+		"-p", strconv.Itoa(mv.SSHPort),
+		"umbra@127.0.0.1",
+	}
+	if len(remoteCmd) > 0 {
+		args = append(args, remoteCmd...)
+	}
+	return args
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
@@ -35,17 +56,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	sshArgs := []string{"ssh",
-		"-i", filepath.Join(paths.SSH(), "id_ed25519"),
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=" + filepath.Join(paths.SSH(), "known_hosts"),
-		"-p", strconv.Itoa(mv.SSHPort),
-		"umbra@127.0.0.1",
-	}
-	if len(args) > 1 {
-		sshArgs = append(sshArgs, args[1:]...)
-	}
-	return syscall.Exec(sshPath, sshArgs, os.Environ())
+	return syscall.Exec(sshPath, sshArgs(mv, args[1:]), os.Environ())
 }
 
 // execCmd is sugar for `umbra shell <name> -- <command...>` — every
