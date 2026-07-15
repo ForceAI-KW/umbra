@@ -532,6 +532,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /v1/machines/{name}/snapshots", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
 		if _, err := s.reg.Load(name); err != nil {
 			writeErr(w, 404, err)
 			return
@@ -560,6 +564,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /v1/machines/{name}/snapshots", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
 		if _, err := s.reg.Load(name); err != nil {
 			writeErr(w, 404, err)
 			return

@@ -844,6 +844,19 @@ func TestSnapshotThenListReturnsOneEntry(t *testing.T) {
 	}
 }
 
+// TestSnapshotOnReservedDockerNameReturns400 covers the same reserved-name
+// guard as restore/DELETE/PATCH: snapshot take must not be allowed to race
+// dockerController.opMu by touching the docker VM's disk directly.
+func TestSnapshotOnReservedDockerNameReturns400(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	resp := postJSON(t, ts.URL+"/v1/machines/docker/snapshots", map[string]string{"name": "s1"})
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
 // TestRestoreMissingSnapshotReturns500 covers restoring a snapshot name
 // that was never taken.
 func TestRestoreMissingSnapshotReturns500(t *testing.T) {
