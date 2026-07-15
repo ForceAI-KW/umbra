@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -689,6 +691,81 @@ func TestPatchMachineDiskShrinkRefused(t *testing.T) {
 	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"disk_gib":30}`)
 	if resp.StatusCode != 400 {
 		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
+// TestPatchMachineReservedDockerName covers Task 2 fix: PATCH must refuse
+// the reserved docker machine like DELETE does, before even attempting
+// reg.Load — so no fixture machine needs to exist.
+func TestPatchMachineReservedDockerName(t *testing.T) {
+	ts, _, _ := newPatchTestServer(t)
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/docker", `{"autostart":true}`)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestPatchMachineZeroCPUsRejected and TestPatchMachineZeroMemoryRejected
+// cover Task 2 fix: an explicit zero value must 400, not silently persist
+// a machine with 0 vCPUs / 0 memory.
+func TestPatchMachineZeroCPUsRejected(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"cpus":0}`)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestPatchMachineZeroMemoryRejected(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"memory_mib":0}`)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 400, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestPatchMachineDiskGrowResizesImage covers Task 2 fix: disk.img must be
+// resolved through the server's own registry (reg.Dir), not the global
+// paths.MachineDir, so this test — using a registry rooted at t.TempDir() —
+// actually exercises the truncate against a fixture file instead of a real
+// path under ~/.umbra.
+func TestPatchMachineDiskGrowResizesImage(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 1})
+
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := patchJSON(t, ts.URL+"/v1/machines/ci", `{"disk_gib":2}`)
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("code=%d body=%s", resp.StatusCode, body)
+	}
+
+	fi, err := os.Stat(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 2<<30 {
+		t.Fatalf("disk.img size = %d, want %d", fi.Size(), int64(2)<<30)
+	}
+
+	m, err := reg.Load("ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.DiskGiB != 2 {
+		t.Fatalf("DiskGiB = %d, want 2", m.DiskGiB)
 	}
 }
 

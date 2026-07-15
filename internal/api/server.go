@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ForceAI-KW/umbra/internal/paths"
 	"github.com/ForceAI-KW/umbra/internal/registry"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
@@ -300,6 +299,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("PATCH /v1/machines/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		if registry.IsReserved(name) {
+			writeErr(w, 400, fmt.Errorf("%q is managed by docker — use 'umbra docker' commands", name))
+			return
+		}
 		m, err := s.reg.Load(name)
 		if err != nil {
 			writeErr(w, 404, err)
@@ -308,6 +311,14 @@ func (s *Server) Handler() http.Handler {
 		var req UpdateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeErr(w, 400, err)
+			return
+		}
+		if req.CPUs != nil && *req.CPUs < 1 {
+			writeErr(w, 400, errors.New("cpus must be >= 1"))
+			return
+		}
+		if req.MemoryMiB != nil && *req.MemoryMiB < 128 {
+			writeErr(w, 400, errors.New("memory_mib must be >= 128"))
 			return
 		}
 		info := s.lc.Info(name)
@@ -327,11 +338,17 @@ func (s *Server) Handler() http.Handler {
 			m.MemoryMiB = *req.MemoryMiB
 		}
 		if req.DiskGiB != nil && *req.DiskGiB > m.DiskGiB {
-			img := filepath.Join(paths.MachineDir(name), "disk.img")
+			img := filepath.Join(s.reg.Dir(name), "disk.img")
 			if err := os.Truncate(img, int64(*req.DiskGiB)<<30); err != nil {
 				writeErr(w, 500, err)
 				return
 			}
+			// If Save below fails after this truncate succeeds, disk.img on
+			// disk is left larger than the persisted DiskGiB. That's
+			// harmless: DiskGiB is only read at create/clone time to size a
+			// fresh disk.img, never to validate the existing file's actual
+			// size, so a retried grow just re-truncates to the same target
+			// size — idempotent.
 			m.DiskGiB = *req.DiskGiB
 		}
 		if req.Autostart != nil {

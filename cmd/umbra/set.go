@@ -38,13 +38,25 @@ var setCmd = &cobra.Command{
 			v := setAutostart == "true"
 			req.Autostart = &v
 		}
+		// Read the pre-update disk size so the growpart/resize2fs hint only
+		// fires when --disk-gib actually grew the disk, not whenever the
+		// flag was merely passed (e.g. re-running `set --disk-gib N` with
+		// the machine already at N would otherwise print a no-op hint).
+		var beforeDiskGiB uint64
+		if req.DiskGiB != nil {
+			before, err := apiClient.GetMachine(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			beforeDiskGiB = before.DiskGiB
+		}
 		mv, err := apiClient.UpdateMachine(cmd.Context(), args[0], req)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("%s: cpus=%d mem=%dGiB disk=%dGiB autostart=%v\n",
 			mv.Name, mv.CPUs, mv.MemoryMiB/1024, mv.DiskGiB, mv.Autostart)
-		if req.DiskGiB != nil {
+		if req.DiskGiB != nil && mv.DiskGiB > beforeDiskGiB {
 			fmt.Println("disk grown on the host — inside the guest run: sudo growpart /dev/vda 1 && sudo resize2fs /dev/vda1")
 		}
 		return nil
