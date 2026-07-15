@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ForceAI-KW/umbra/internal/registry"
+	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
 
@@ -520,6 +521,72 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /v1/rosetta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"available": s.rosetta()})
+	})
+
+	mux.HandleFunc("POST /v1/machines/{name}/snapshots", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if _, err := s.reg.Load(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		if info := s.lc.Info(name); info.State == vm.StateRunning || info.Zombie {
+			writeErr(w, 409, fmt.Errorf("machine %q must be stopped to snapshot", name))
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+			writeErr(w, 400, fmt.Errorf("snapshot name required"))
+			return
+		}
+		if !registry.ValidName(req.Name) {
+			writeErr(w, 400, fmt.Errorf("invalid snapshot name"))
+			return
+		}
+		if err := snapshot.Take(s.reg.Dir(name), filepath.Join(s.reg.Dir(name), "snapshots"), req.Name); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(201)
+	})
+
+	mux.HandleFunc("GET /v1/machines/{name}/snapshots", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if _, err := s.reg.Load(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		infos, err := snapshot.List(filepath.Join(s.reg.Dir(name), "snapshots"))
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, infos)
+	})
+
+	mux.HandleFunc("POST /v1/machines/{name}/restore", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if _, err := s.reg.Load(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		if info := s.lc.Info(name); info.State == vm.StateRunning || info.Zombie {
+			writeErr(w, 409, fmt.Errorf("machine %q must be stopped to restore", name))
+			return
+		}
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+			writeErr(w, 400, fmt.Errorf("snapshot name required"))
+			return
+		}
+		if err := snapshot.Restore(s.reg.Dir(name), filepath.Join(s.reg.Dir(name), "snapshots"), req.Name); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
 	})
 
 	return mux

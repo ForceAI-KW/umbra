@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/ForceAI-KW/umbra/internal/registry"
+	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
 
@@ -791,5 +792,69 @@ func TestRosettaStatus(t *testing.T) {
 	}
 	if out.Available != "notInstalled" {
 		t.Fatalf("available = %q, want notInstalled", out.Available)
+	}
+}
+
+// TestSnapshotWhileRunningReturns409 covers the same stopped-machine guard
+// as DELETE/PATCH resize: a running machine must refuse a snapshot request.
+func TestSnapshotWhileRunningReturns409(t *testing.T) {
+	ts, reg, lc := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	lc.states["ci"] = vm.StateRunning
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/snapshots", map[string]string{"name": "s1"})
+	if resp.StatusCode != 409 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 409, got %d body=%s", resp.StatusCode, body)
+	}
+}
+
+// TestSnapshotThenListReturnsOneEntry covers the happy path: take a
+// snapshot of a stopped machine, then list it back.
+func TestSnapshotThenListReturnsOneEntry(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(reg.Dir("ci"), "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"name":"ci"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/snapshots", map[string]string{"name": "s1"})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("take: want 201, got %d body=%s", resp.StatusCode, body)
+	}
+
+	listResp, err := http.Get(ts.URL + "/v1/machines/ci/snapshots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var infos []snapshot.Info
+	if err := json.NewDecoder(listResp.Body).Decode(&infos); err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].Name != "s1" {
+		t.Fatalf("infos=%v", infos)
+	}
+}
+
+// TestRestoreMissingSnapshotReturns500 covers restoring a snapshot name
+// that was never taken.
+func TestRestoreMissingSnapshotReturns500(t *testing.T) {
+	ts, reg, _ := newPatchTestServer(t)
+	reg.Save(&registry.Machine{Name: "ci", CPUs: 2, MemoryMiB: 1024, DiskGiB: 10})
+	imgPath := filepath.Join(reg.Dir("ci"), "disk.img")
+	if err := os.WriteFile(imgPath, []byte("dummy-disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postJSON(t, ts.URL+"/v1/machines/ci/restore", map[string]string{"name": "nope"})
+	if resp.StatusCode != 500 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("want 500, got %d body=%s", resp.StatusCode, body)
 	}
 }

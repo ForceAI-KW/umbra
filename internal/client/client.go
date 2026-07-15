@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ForceAI-KW/umbra/internal/registry"
+	"github.com/ForceAI-KW/umbra/internal/snapshot"
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
 
@@ -197,6 +198,18 @@ func (c *Client) DockerStatus(ctx context.Context) (*DockerStatus, error) {
 }
 func (c *Client) DockerUninstall(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/v1/docker/uninstall", nil, nil)
+}
+
+func (c *Client) TakeSnapshot(ctx context.Context, machine, snap string) error {
+	return c.do(ctx, http.MethodPost, "/v1/machines/"+machine+"/snapshots", map[string]string{"name": snap}, nil)
+}
+func (c *Client) ListSnapshots(ctx context.Context, machine string) ([]snapshot.Info, error) {
+	var out []snapshot.Info
+	err := c.do(ctx, http.MethodGet, "/v1/machines/"+machine+"/snapshots", nil, &out)
+	return out, err
+}
+func (c *Client) RestoreSnapshot(ctx context.Context, machine, snap string) error {
+	return c.do(ctx, http.MethodPost, "/v1/machines/"+machine+"/restore", map[string]string{"name": snap}, nil)
 }
 
 // Rosetta returns the host's Rosetta-for-Linux availability:
