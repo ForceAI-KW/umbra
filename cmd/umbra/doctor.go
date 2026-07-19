@@ -116,7 +116,9 @@ func collectEvidence(ctx context.Context) doctor.Evidence {
 		}
 	}
 
-	ev.Repos, ev.GHAvailable = collectGitHub(ctx, ev.Guests)
+	repos, ghOK, ghUnprobed := collectGitHub(ctx, ev.Guests)
+	ev.Repos, ev.GHAvailable = repos, ghOK
+	ev.Unprobed = append(ev.Unprobed, ghUnprobed...)
 	return ev
 }
 
@@ -373,17 +375,41 @@ func realGH(ctx context.Context, args ...string) ([]byte, error) {
 // read out of the guests, then probes each one. Deriving beats hardcoding: the
 // set of repos a host serves changes whenever a runner is added, and a
 // hardcoded list would quietly stop matching.
-func collectGitHub(ctx context.Context, guests []doctor.GuestEvidence) ([]doctor.RepoEvidence, bool) {
+// It returns an Unprobed record when the repo set could not be derived at all.
+// That case is not hypothetical and not harmless: runner units are read over
+// ssh, so a wedged guest yields zero units, and the ENTIRE GitHub half of the
+// ladder would then report nothing — silently, at exactly the moment CI is
+// broken and the operator most needs to know whether the cause is GitHub-side.
+// "I could not look" and "I looked and found nothing" must not be the same
+// output; that is the same defect the Unprobed machinery exists to prevent.
+func collectGitHub(ctx context.Context, guests []doctor.GuestEvidence) ([]doctor.RepoEvidence, bool, []doctor.Unprobed) {
+	gh := ghAvailable()
+
 	var units []string
+	unreachable := 0
 	for _, g := range guests {
+		if g.State == vm.StateRunning && g.SSHProbed && !g.SSHOK {
+			unreachable++
+		}
 		for _, r := range g.Runners {
 			units = append(units, r.Unit)
 		}
 	}
+
 	if len(units) == 0 {
-		return nil, ghAvailable()
+		detail := "no actions.runner units were discovered, so no repo could be derived"
+		next := "if this host serves CI, check: umbra exec <machine> systemctl list-units 'actions.runner.*' --all"
+		if unreachable > 0 {
+			detail = fmt.Sprintf("%d running guest(s) unreachable over ssh, so no runner units could be read and no repo could be derived", unreachable)
+			next = "fix the guest first (see the guest rung above), then re-run doctor — GitHub-side rungs cannot be evaluated until runner units are readable"
+		}
+		return nil, gh, []doctor.Unprobed{{
+			What:       "GitHub repos",
+			Detail:     detail,
+			NextAction: next,
+		}}
 	}
-	return collectRepos(ctx, realGH, units), ghAvailable()
+	return collectRepos(ctx, realGH, units), gh, nil
 }
 
 func ghAvailable() bool {
@@ -494,11 +520,12 @@ func probeRepo(ctx context.Context, gh ghExec, repo string) (doctor.RepoEvidence
 	}
 	ev.RunnerOnline = online
 
-	lockout, err := probeBillingLockout(ctx, gh, repo)
+	lockout, lockoutLabels, err := probeBillingLockout(ctx, gh, repo)
 	if err != nil {
 		return ev, err
 	}
 	ev.BillingLockout = lockout
+	ev.BillingLabels = lockoutLabels
 
 	ev.Probed = true
 	return ev, nil
@@ -529,6 +556,7 @@ type ghJob struct {
 	StartedAt   time.Time         `json:"started_at"`
 	CompletedAt time.Time         `json:"completed_at"`
 	Steps       []json.RawMessage `json:"steps"`
+	Labels      []string          `json:"labels"`
 }
 
 const (
@@ -549,31 +577,46 @@ const (
 // job — a run where one job reached a runner is an ordinary CI failure, and
 // sending Ahmad to the org billing page for a broken test is precisely the
 // misdiagnosis this tool exists to prevent.
-func billingLockoutSignature(jobs []ghJob) bool {
+// It also returns the distinct runner labels the blocked jobs asked for. The
+// signature CANNOT by itself separate three different causes that look
+// identical in the jobs API: an org billing block, exhausted cloud minutes, or
+// no runner matching the requested labels. The labels disambiguate at a
+// glance — `ubuntu-latest` points at GitHub-hosted billing, whereas a
+// self-hosted label set points at a runner that never registered.
+func billingLockoutSignature(jobs []ghJob) (bool, []string) {
 	failed := 0
+	seen := map[string]bool{}
+	var labels []string
 	for _, j := range jobs {
 		if j.Conclusion != "failure" {
 			continue
 		}
 		failed++
 		if j.RunnerName != "" || len(j.Steps) != 0 {
-			return false
+			return false, nil
 		}
 		d := j.CompletedAt.Sub(j.StartedAt)
 		if d < 0 || d > billingLockoutMaxDuration {
-			return false
+			return false, nil
+		}
+		for _, l := range j.Labels {
+			if !seen[l] {
+				seen[l] = true
+				labels = append(labels, l)
+			}
 		}
 	}
-	return failed > 0
+	sort.Strings(labels) // deterministic output; map iteration is randomised
+	return failed > 0, labels
 }
 
 // probeBillingLockout inspects the most recent failed workflow run. Only the
 // newest one: a lockout blocks every run, so if the newest failure does not
 // carry the signature the org is not locked out right now.
-func probeBillingLockout(ctx context.Context, gh ghExec, repo string) (bool, error) {
+func probeBillingLockout(ctx context.Context, gh ghExec, repo string) (bool, []string, error) {
 	out, err := gh(ctx, "api", fmt.Sprintf("repos/%s/actions/runs?per_page=%d", repo, billingLockoutRunsScanned))
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	var runs struct {
 		WorkflowRuns []struct {
@@ -583,7 +626,7 @@ func probeBillingLockout(ctx context.Context, gh ghExec, repo string) (bool, err
 		} `json:"workflow_runs"`
 	}
 	if err := json.Unmarshal(out, &runs); err != nil {
-		return false, fmt.Errorf("parsing actions/runs: %w", err)
+		return false, nil, fmt.Errorf("parsing actions/runs: %w", err)
 	}
 
 	for _, r := range runs.WorkflowRuns {
@@ -591,21 +634,22 @@ func probeBillingLockout(ctx context.Context, gh ghExec, repo string) (bool, err
 			continue
 		}
 		if !r.UpdatedAt.IsZero() && time.Since(r.UpdatedAt) > billingLockoutLookback {
-			return false, nil // too old to be describing the present
+			return false, nil, nil // too old to be describing the present
 		}
 		jobsOut, err := gh(ctx, "api", fmt.Sprintf("repos/%s/actions/runs/%d/jobs", repo, r.ID))
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		var jr struct {
 			Jobs []ghJob `json:"jobs"`
 		}
 		if err := json.Unmarshal(jobsOut, &jr); err != nil {
-			return false, fmt.Errorf("parsing run jobs: %w", err)
+			return false, nil, fmt.Errorf("parsing run jobs: %w", err)
 		}
-		return billingLockoutSignature(jr.Jobs), nil
+		locked, labels := billingLockoutSignature(jr.Jobs)
+		return locked, labels, nil
 	}
-	return false, nil
+	return false, nil, nil
 }
 
 func init() {

@@ -277,11 +277,25 @@ func classifyRepos(e Evidence) []Verdict {
 			continue
 		}
 		if r.BillingLockout {
+			supporting := []string{"signature: runner_name empty, steps empty, ~3s duration"}
+			next := "clear the org billing block: GitHub org -> Settings -> Billing & plans (only the org owner can do this)"
+			// Three different causes produce an identical fingerprint in the
+			// jobs API: an org billing block, exhausted cloud minutes, and no
+			// runner matching the requested labels. Surface the labels so a
+			// human can tell them apart at a glance instead of being sent to
+			// the billing page for a label mismatch.
+			if len(r.BillingLabels) > 0 {
+				supporting = append(supporting,
+					fmt.Sprintf("blocked jobs requested labels: %v", r.BillingLabels))
+				if !requestsGitHubHosted(r.BillingLabels) {
+					next = fmt.Sprintf("these jobs asked for %v, not a GitHub-hosted label — check the runner is registered and its labels match before looking at billing: umbra doctor, then gh api repos/%s/actions/runners", r.BillingLabels, r.Repo)
+				}
+			}
 			out = append(out, Verdict{
 				Rung: RungBillingLockout, Health: Fail, Subject: r.Repo,
 				Reason:     "jobs are failing in ~3s with no runner assigned and zero steps",
-				Supporting: []string{"signature: runner_name empty, steps empty, ~3s duration"},
-				NextAction: "clear the org billing block: GitHub org -> Settings -> Billing & plans (only the org owner can do this)",
+				Supporting: supporting,
+				NextAction: next,
 			})
 			continue
 		}
@@ -306,4 +320,20 @@ func classifyRepos(e Evidence) []Verdict {
 		}
 	}
 	return out
+}
+
+// requestsGitHubHosted reports whether the label set names a GitHub-hosted
+// runner. Those are the only labels for which "billing" is the likely cause of
+// a no-runner-assigned failure; a self-hosted label set failing the same way
+// points at a runner that never registered.
+func requestsGitHubHosted(labels []string) bool {
+	for _, l := range labels {
+		switch {
+		case strings.HasPrefix(l, "ubuntu-"),
+			strings.HasPrefix(l, "windows-"),
+			strings.HasPrefix(l, "macos-"):
+			return true
+		}
+	}
+	return false
 }

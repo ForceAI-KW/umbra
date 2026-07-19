@@ -158,7 +158,7 @@ func TestBillingLockoutSignature(t *testing.T) {
 		Conclusion: "failure", RunnerName: "",
 		StartedAt: start, CompletedAt: start.Add(3 * time.Second),
 	}}
-	if !billingLockoutSignature(lockedOut) {
+	if locked, _ := billingLockoutSignature(lockedOut); !locked {
 		t.Error("the billing-lockout signature (3s, no runner, zero steps) was not recognised")
 	}
 
@@ -170,7 +170,7 @@ func TestBillingLockoutSignature(t *testing.T) {
 		StartedAt: start, CompletedAt: start.Add(4 * time.Minute),
 		Steps: []json.RawMessage{[]byte(`{}`)},
 	}}
-	if billingLockoutSignature(realFailure) {
+	if locked, _ := billingLockoutSignature(realFailure); locked {
 		t.Error("a genuine job failure was misread as a billing lockout")
 	}
 
@@ -180,11 +180,11 @@ func TestBillingLockoutSignature(t *testing.T) {
 		StartedAt: start, CompletedAt: start.Add(2 * time.Second),
 		Steps: []json.RawMessage{[]byte(`{}`)},
 	}}
-	if billingLockoutSignature(fastButStepped) {
+	if locked, _ := billingLockoutSignature(fastButStepped); locked {
 		t.Error("a fast failure WITH steps is not the billing signature")
 	}
 
-	if billingLockoutSignature(nil) {
+	if locked, _ := billingLockoutSignature(nil); locked {
 		t.Error("no jobs is not evidence of a lockout")
 	}
 }
@@ -417,5 +417,70 @@ func TestExitCodeOnlyFailsOnFail(t *testing.T) {
 		if got := faultsFound(c.vs); got != c.want {
 			t.Errorf("%s: faultsFound = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// The lockout fingerprint is identical for an org billing block, exhausted
+// minutes, and no runner matching the labels. The labels are the only thing in
+// the API that tells them apart, so they must survive into the evidence.
+func TestBillingLockoutSignatureReportsRequestedLabels(t *testing.T) {
+	jobs := []ghJob{
+		{Conclusion: "failure", Labels: []string{"ubuntu-latest"}},
+		{Conclusion: "failure", Labels: []string{"self-hosted", "ubuntu-latest"}},
+		{Conclusion: "success", Labels: []string{"ignored-because-not-failed"}},
+	}
+	locked, labels := billingLockoutSignature(jobs)
+	if !locked {
+		t.Fatal("expected the lockout signature to match")
+	}
+	// Sorted and de-duplicated, so --json output does not churn between runs.
+	want := []string{"self-hosted", "ubuntu-latest"}
+	if len(labels) != len(want) {
+		t.Fatalf("labels = %v, want %v", labels, want)
+	}
+	for i := range want {
+		if labels[i] != want[i] {
+			t.Fatalf("labels = %v, want %v", labels, want)
+		}
+	}
+}
+
+// Runner units are read over ssh, so a wedged guest yields zero units and the
+// whole GitHub half of the ladder goes dark. It must say so rather than report
+// nothing — "could not look" and "looked, found nothing" are different answers,
+// and conflating them is the defect the Unprobed machinery exists to prevent.
+func TestCollectGitHubReportsUnprobedWhenNoUnitsDiscoverable(t *testing.T) {
+	guests := []doctor.GuestEvidence{{
+		Name: "fwb-ci5", State: vm.StateRunning, IP: "192.168.127.10",
+		SSHProbed: true, SSHOK: false,
+	}}
+	repos, _, unprobed := collectGitHub(context.Background(), guests)
+	if len(repos) != 0 {
+		t.Errorf("repos = %v, want none", repos)
+	}
+	if len(unprobed) != 1 {
+		t.Fatalf("unprobed = %v, want exactly 1 record", unprobed)
+	}
+	if !strings.Contains(unprobed[0].Detail, "unreachable") {
+		t.Errorf("detail %q does not explain that the guest was unreachable", unprobed[0].Detail)
+	}
+	if unprobed[0].NextAction == "" {
+		t.Error("unprobed record carries no next action")
+	}
+}
+
+// A reachable guest with no runner units is a different situation from an
+// unreachable one, and the operator needs different advice.
+func TestCollectGitHubDistinguishesReachableHostWithNoRunners(t *testing.T) {
+	guests := []doctor.GuestEvidence{{
+		Name: "dev", State: vm.StateRunning, IP: "192.168.127.11",
+		SSHProbed: true, SSHOK: true,
+	}}
+	_, _, unprobed := collectGitHub(context.Background(), guests)
+	if len(unprobed) != 1 {
+		t.Fatalf("unprobed = %v, want exactly 1 record", unprobed)
+	}
+	if strings.Contains(unprobed[0].Detail, "unreachable") {
+		t.Errorf("detail %q blames unreachability on a guest whose ssh was fine", unprobed[0].Detail)
 	}
 }

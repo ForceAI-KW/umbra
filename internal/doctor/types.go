@@ -169,6 +169,11 @@ type RepoEvidence struct {
 	Probed         bool
 	RunnerOnline   map[string]bool // runner name -> online
 	BillingLockout bool            // recent jobs: ~3s, empty runner_name, zero steps
+	// BillingLabels are the runner labels the blocked jobs requested. The
+	// lockout signature cannot separate an org billing block from exhausted
+	// minutes or from no runner matching the labels — these make the cause
+	// legible to a human without another API call.
+	BillingLabels []string
 }
 
 // Unprobed records a probe the collector could not RUN AT ALL — ssh missing
