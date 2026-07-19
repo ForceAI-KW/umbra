@@ -66,3 +66,49 @@ func TestScanLogNoListeningLineKeepsNothing(t *testing.T) {
 		t.Errorf("len(lines) = %d, want 0", len(lines))
 	}
 }
+
+// F4. If the daemon-start marker's own timestamp is corrupt, the line is
+// invisible to the cutoff search and an OLDER marker would be used instead —
+// silently reintroducing exactly the stale evidence the cutoff exists to
+// remove. That is an anomaly, so fail closed rather than convict on stale logs.
+func TestScanLogUnparseableStartMarkerFailsClosed(t *testing.T) {
+	const l = `time=2026-07-19T20:00:00.000+03:00 level=INFO msg="umbrad listening" socket=/x
+time=2026-07-19T20:01:00.000+03:00 level=INFO msg="netstack: guest link aa:bb:cc:dd:ee:01 closed: cannot receive packets"
+time=NOT-A-TIMESTAMP level=INFO msg="umbrad listening" socket=/x
+time=2026-07-19T22:01:00.000+03:00 level=INFO msg=autostarting machine=fwb-ci5
+`
+	lines, start, err := ScanLog(strings.NewReader(l))
+	if err == nil {
+		t.Fatal("ScanLog accepted a daemon-start marker with an unparseable timestamp")
+	}
+	if len(lines) != 0 {
+		t.Errorf("len(lines) = %d, want 0 (fail closed)", len(lines))
+	}
+	if !start.IsZero() {
+		t.Errorf("start = %v, want zero", start)
+	}
+}
+
+// F5. timeRe was unanchored, so it matched the first `time=` ANYWHERE in the
+// line. A line with no leading timestamp field but a `time=` inside its message
+// body was therefore accepted and stamped with the decoy's value — a fabricated
+// timestamp, which is worse than dropping the line. Anchoring makes the regex
+// describe the field it actually means.
+func TestScanLogIgnoresDecoyTimeInMessageBody(t *testing.T) {
+	const l = `time=2026-07-19T23:00:00.000+03:00 level=INFO msg="umbrad listening"
+level=INFO msg="replaying from time=2020-01-01T00:00:00.000+00:00" machine=fwb-ci5
+time=2026-07-19T23:05:00.000+03:00 level=INFO msg="probe slow: last time=200ms" machine=fwb-ci5
+`
+	lines, _, err := ScanLog(strings.NewReader(l))
+	if err != nil {
+		t.Fatalf("ScanLog returned error: %v", err)
+	}
+	// The decoy line has no real timestamp field and must be dropped entirely.
+	if len(lines) != 2 {
+		t.Fatalf("len(lines) = %d, want 2 — the decoy-only line was accepted with a fabricated Time: %+v", len(lines), lines)
+	}
+	want := "2026-07-19T23:05:00.000+03:00"
+	if got := lines[1].Time.Format("2006-01-02T15:04:05.000-07:00"); got != want {
+		t.Errorf("Time = %q, want %q", got, want)
+	}
+}

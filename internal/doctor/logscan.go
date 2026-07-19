@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -10,7 +11,14 @@ import (
 
 var (
 	// time=2026-07-19T22:25:49.262+03:00  and  time="2026-07-19T22:25:49+03:00"
-	timeRe = regexp.MustCompile(`time="?([0-9T:.+\-]+)"?`)
+	//
+	// ANCHORED at the start of the line on purpose. slog writes the time field
+	// first, so the real field is always at position 0. Unanchored, this
+	// matched the first `time=` anywhere — including one inside a quoted
+	// message body — which stamped a line with a fabricated timestamp instead
+	// of dropping it. A wrong time is worse than no line: the cutoff and the
+	// whole staleness guard are built on these values.
+	timeRe = regexp.MustCompile(`^time="?([0-9T:.+\-]+)"?`)
 	macRe  = regexp.MustCompile(`guest link ([0-9a-fA-F:]{17}) closed`)
 )
 
@@ -32,6 +40,10 @@ const daemonStartMarker = "umbrad listening"
 //
 // When no start marker is present we cannot establish a cutoff, so we return
 // nothing rather than risk convicting on stale evidence.
+//
+// A start marker whose OWN timestamp will not parse is an error, not a line to
+// skip: skipping it would silently fall back to an older marker and widen the
+// cutoff to cover an already-fixed fault — precisely what the cutoff prevents.
 func ScanLog(r io.Reader) ([]LogLine, time.Time, error) {
 	var all []LogLine
 	sc := bufio.NewScanner(r)
@@ -39,11 +51,20 @@ func ScanLog(r io.Reader) ([]LogLine, time.Time, error) {
 	for sc.Scan() {
 		text := sc.Text()
 		m := timeRe.FindStringSubmatch(text)
-		if m == nil {
-			continue
+		var ts time.Time
+		if m != nil {
+			var err error
+			ts, err = time.Parse(time.RFC3339Nano, m[1])
+			if err != nil {
+				m = nil
+			}
 		}
-		ts, err := time.Parse(time.RFC3339Nano, m[1])
-		if err != nil {
+		if m == nil {
+			// Fail closed: an unreadable daemon-start marker makes the whole
+			// cutoff untrustworthy, so report that rather than guess.
+			if strings.Contains(text, daemonStartMarker) {
+				return nil, time.Time{}, fmt.Errorf("doctor: daemon-start marker has an unparseable timestamp, cannot establish a log cutoff: %q", text)
+			}
 			continue
 		}
 		l := LogLine{Time: ts, Text: text}

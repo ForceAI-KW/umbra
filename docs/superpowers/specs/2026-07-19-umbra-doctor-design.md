@@ -63,7 +63,20 @@ Ordered by blast radius: host-wide faults first, then per-guest, then per-repo.
 
 **Verdict shape.** Rungs 0 and 1 are host-wide and terminate the ladder — if the daemon is
 down or netstack is dead, nothing below it can be diagnosed meaningfully, so doctor reports
-that single verdict and stops. Rungs 2–7 are scoped to a guest or a repo, and doctor reports
+that single verdict and stops.
+
+**Precedence.** The terminating tiers are evaluated in this order, which is *not* the same
+as rung number:
+
+1. **Daemon down** (rung 0) — nothing below can even be collected.
+2. **Host hardware** (rung 7) — the two-guest discriminator and the load canary. These are
+   live, present-tense observations of the machine miscomputing, and they deliberately
+   **outrank rung 1**: rung 1 is inferred from a log, and telling an operator to rebuild
+   umbra when the CPU is failing under load sends them down a dead end. When both host
+   signals are present they merge into one verdict carrying both evidence strings.
+3. **Netstack death** (rung 1) — host-wide, but log-derived, so it yields to tier 2.
+
+Rungs 2–7 are scoped to a guest or a repo, and doctor reports
 **one verdict per affected subject**, sorted by rung. A host with a healthy guest and one
 stale runner registration therefore prints exactly one rung-5 finding, not a global failure.
 
@@ -73,7 +86,7 @@ non-zero otherwise) so the watchdog can consume it.
 | # | Rung | Signature | Next action |
 |---|---|---|---|
 | 0 | Daemon down | Ping fails | `umbra daemon install` |
-| 1 | Netstack death | `guest link … cannot receive packets` across ≥2 distinct MACs, and/or `no route to host`, **plus** a live reachability failure | `make build && make install` |
+| 1 | Netstack death | ≥2 guests that are each *currently running, currently unreachable, and named by a `guest link <MAC> … cannot receive packets` line in this daemon lifetime* | `make build && make install` |
 | 2 | Guest no-IP | state `running`, IP empty | recreate — unless the discriminator says host-level |
 | 3 | Guest has IP, ssh won't accept | readiness/ssh timeout | `stop`/`start`, wait for `cloud-init status` = done |
 | 4 | Runner service inactive | systemd unit not `active` | restart the unit |
@@ -81,17 +94,25 @@ non-zero otherwise) so the watchdog can consume it.
 | 6 | Billing lockout | jobs fail in ~3s with `runner_name:""` and `steps:[]` | **Ahmad** — org Billing & plans |
 | 7 | Idle-healthy but faults under load | `--deep` canary hits SIGILL/SIGSEGV | **power-cycle + Apple Diagnostics** |
 
-Rungs 4–6 are per-repo and depend on `gh`.
+Rung 4 is in-guest (systemd, over ssh). Rungs 5–6 are per-repo and depend on `gh`.
 
 ### `--deep`
 
-Default mode is strictly read-only. `--deep` opts into two probes that cost time or
-mutate state:
+`--deep` opts into the one probe that costs real time. It does **not** start, stop, or
+otherwise mutate any machine — see the discriminator note below.
 
-- **Two-guest discriminator** (rung 2): boot the spare guest and probe it. If it fails
-  identically, the fault is host-level, not guest-image — which rules out a ~20-minute
-  recreate in about 2 minutes. Doctor stops the spare again afterward. If the spare boots
-  clean, the primary's image really is damaged and recreate is the correct action.
+- **Two-guest discriminator** (rung 2): if two guests that are *already running* both fail
+  to obtain an IP, the fault is host-level, not guest-image — which rules out a ~20-minute
+  recreate in about 2 minutes.
+
+  **Doctor does NOT boot the spare guest.** An earlier draft of this design had `--deep`
+  start the stopped spare, probe it, and stop it again. That was deliberately not built,
+  for two reasons: it would make `--deep` mutate machine state, and the ops watchdog
+  (`ci-runner-guard.sh`) treats the spare being stopped as a steady-state invariant —
+  doctor starting it would trip the very alarm doctor exists to explain. The discriminator
+  therefore works only with guests that happen to be running already, and reports nothing
+  when there is just one. `GuestEvidence.Spare` records *which* machine is the spare; it is
+  not a signal that doctor started anything.
 - **Native-binary load canary** (rung 7): a bounded ~60s stress — `curl`/`openssl` loops
   plus a parallel CPU burst — watching for SIGILL/SIGSEGV. Stock arm64 binaries taking
   CPU-level signals means the guest is miscomputing, which is a host-level fault that no
@@ -106,20 +127,40 @@ out explicitly.**
 writing it still contains netstack-death lines from 22:25, on a host that is now healthy.
 A naive grep would match those lines and report rung 1 forever.
 
-Two mitigations, both required:
+Three mitigations, all required:
 
 1. The log scanner considers only lines **at or after the current daemon's start
-   timestamp**.
+   timestamp**. If the start marker's own timestamp will not parse, the scanner fails
+   closed and returns an error rather than silently falling back to an older marker.
 2. Rung 1 additionally requires a **live reachability failure**. Log evidence alone never
    convicts.
+3. **Correlation, not counting.** `guest link <MAC> closed: cannot receive packets` is
+   `level=INFO` and is emitted on **every ordinary guest shutdown** — measured against the
+   real log, 7 of 13 daemon lifetimes already carried ≥2 distinct MACs with no fault
+   present. So counting MACs is not evidence of anything. A MAC counts only when it belongs
+   to a guest that is *right now* running and unreachable, and ≥2 such guests are required.
+   Without this, rung 1 degenerates into "any unreachable guest ⇒ rebuild umbra" and makes
+   rungs 2 and 3 unreachable in production.
 
-This gets a dedicated test.
+   This correlation needs `GuestEvidence.MAC`, populated from the machine registry
+   (`registry.Machine.MAC`, reachable as `MachineView.MAC`). If **no** guest carries a MAC,
+   doctor cannot perform the correlation and emits an explicit `unknown` verdict on the
+   `unknown` rung saying so — it never convicts on log evidence alone, and never stays
+   silent, which would render an unpopulated field as health.
+
+Each of these gets a dedicated test.
 
 ## Error handling
 
-When `gh` is missing, unauthenticated, or rate-limited, rungs 4–6 report `unknown` — never
-`pass`. Silence must not be reportable as health; an absent probe and a passing probe are
-different states and are rendered differently.
+When `gh` is missing, unauthenticated, or rate-limited, the per-repo rungs report `unknown`
+— never `pass`. Silence must not be reportable as health; an absent probe and a passing
+probe are different states and are rendered differently.
+
+An `unknown` verdict carries the dedicated **`unknown` rung**, not the rung it failed to
+evaluate. "We could not tell" is not the same finding as "the runner is offline", and a
+consumer keying remediation off `rung` must not act on a fault that was never diagnosed.
+An `unknown` verdict degrades that one rung and lets the rest of the diagnosis continue —
+it never terminates the ladder.
 
 Any single probe failing degrades that rung to `unknown` and lets classification continue.
 One unreachable guest must not abort the whole diagnosis.
