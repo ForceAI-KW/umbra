@@ -23,9 +23,14 @@ not something software can perform.
 
 Three units, split so the diagnostic logic is testable without a broken host.
 
-### `internal/doctor` — `Collect`
+### `cmd/umbra/doctor.go` — evidence collection
 
-All I/O lives here, behind an interface so tests can supply canned evidence:
+All I/O lives in the CLI layer, not in `internal/doctor`. This follows the repo's
+existing pattern (`stats.go` and `runner.go` both collect over ssh from `cmd/umbra`) and
+keeps `internal/doctor` free of cobra and client plumbing — that purity is what makes
+`Classify` testable, so it is worth protecting.
+
+Collected:
 
 - daemon ping (via the existing API client)
 - machine list (name, state, IP)
@@ -34,7 +39,9 @@ All I/O lives here, behind an interface so tests can supply canned evidence:
 - per-guest runner systemd unit state
 - GitHub runner registration + recent job outcomes, via `gh`
 
-Produces an `Evidence` struct. No interpretation happens here.
+Produces an `Evidence` struct. No interpretation happens here. Every probe failure
+degrades that one field rather than aborting — one unreachable guest must not blind the
+diagnosis to the rest of the host.
 
 ### `internal/doctor` — `Classify(Evidence) Verdict`
 

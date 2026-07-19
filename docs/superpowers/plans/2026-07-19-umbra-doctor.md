@@ -277,6 +277,7 @@ import (
 	"bufio"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -327,7 +328,7 @@ func ScanLog(r io.Reader) ([]LogLine, time.Time, error) {
 	// Find the LAST start marker — that is the current lifetime.
 	startIdx := -1
 	for i, l := range all {
-		if containsMarker(l.Text) {
+		if strings.Contains(l.Text, daemonStartMarker) {
 			startIdx = i
 		}
 	}
@@ -335,15 +336,6 @@ func ScanLog(r io.Reader) ([]LogLine, time.Time, error) {
 		return nil, time.Time{}, nil
 	}
 	return all[startIdx:], all[startIdx].Time, nil
-}
-
-func containsMarker(s string) bool {
-	for i := 0; i+len(daemonStartMarker) <= len(s); i++ {
-		if s[i:i+len(daemonStartMarker)] == daemonStartMarker {
-			return true
-		}
-	}
-	return false
 }
 ```
 
@@ -886,10 +878,11 @@ git commit -m "feat(doctor): github rungs with unknown-not-pass propagation"
 ### Task 6: Evidence collection and the CLI
 
 **Files:**
-- Create: `internal/doctor/collect.go`
 - Create: `cmd/umbra/doctor.go`
-- Modify: `cmd/umbra/root.go` (register the command)
+- Modify: `cmd/umbra/root.go` (register the command, wire the exit-code sentinel)
 - Test: `cmd/umbra/doctor_test.go`
+
+**Where collection lives:** in `cmd/umbra/doctor.go`, not in `internal/doctor`. This follows the repo's existing pattern — `stats.go` and `runner.go` both do their ssh collection in `cmd/umbra` — and keeps `internal/doctor` free of cobra and client plumbing. That purity is the whole reason `Classify` is testable, so it is worth protecting.
 
 **Interfaces:**
 - Consumes: `Classify`, `ScanLog`, `Evidence` and friends from Tasks 1-5; `sshArgs(mv *client.MachineView, remoteCmd []string) []string` from `cmd/umbra/shell.go:28`.
@@ -902,18 +895,21 @@ git commit -m "feat(doctor): github rungs with unknown-not-pass propagation"
 ```go
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDoctorCanaryScriptCoversBothSignalCanaries(t *testing.T) {
 	s := canaryScript
 	for _, want := range []string{"curl --version", "openssl", "RC=$?"} {
-		if !contains(s, want) {
+		if !strings.Contains(s, want) {
 			t.Errorf("canaryScript missing %q", want)
 		}
 	}
 	// The canary must be bounded — an unbounded stress loop on a suspect host
 	// is exactly the wrong thing to leave running.
-	if !contains(s, "seq 1 ") {
+	if !strings.Contains(s, "seq 1 ") {
 		t.Error("canaryScript is not bounded by a fixed iteration count")
 	}
 }
@@ -934,15 +930,6 @@ func TestDoctorCanaryDetectsSignalExitCodes(t *testing.T) {
 		}
 	}
 }
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -957,6 +944,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1047,12 +1035,18 @@ var doctorCmd = &cobra.Command{
 
 		for _, v := range verdicts {
 			if v.Health == doctor.Fail {
-				os.Exit(1)
+				return errFaultsFound
 			}
 		}
 		return nil
 	},
 }
+
+// errFaultsFound signals "diagnosis succeeded and found faults" — distinct
+// from "the command itself failed". main maps it to exit 1 without printing
+// a spurious error, so deferred cleanup still runs and cobra stays in charge
+// of the error path.
+var errFaultsFound = errors.New("faults found")
 
 func printVerdicts(vs []doctor.Verdict) {
 	if len(vs) == 0 {
@@ -1126,9 +1120,27 @@ func init() {
 }
 ```
 
-- [ ] **Step 4: Register the command**
+- [ ] **Step 4: Register the command and wire the exit code**
 
-In `cmd/umbra/root.go`, add `doctorCmd` to the existing `AddCommand(...)` call, keeping the surrounding list's formatting and ordering style.
+In `cmd/umbra/root.go`, append `doctorCmd` to the existing single-line `rootCmd.AddCommand(...)` call (it currently ends `..., pruneCmd, statsCmd)`).
+
+Then teach `execute()` about the sentinel, so a found fault exits 1 without printing a spurious `error:` line. Add `"errors"` to root.go's import block and change the error branch:
+
+```go
+func execute() int {
+	rootCmd.AddCommand(createCmd, listCmd, startCmd, stopCmd, rmCmd, shellCmd, execCmd, statusCmd, forwardCmd, dockerCmd, daemonCmd, rosettaCmd, setCmd, snapshotCmd, snapshotsCmd, restoreCmd, exportCmd, importCmd, runnerCmd, pruneCmd, statsCmd, doctorCmd)
+	if err := rootCmd.Execute(); err != nil {
+		// doctor reports faults through the exit code; the findings are
+		// already on stdout, so an "error:" line would be noise.
+		if errors.Is(err, errFaultsFound) {
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+```
 
 - [ ] **Step 5: Run tests, build, and verify live**
 
@@ -1143,7 +1155,7 @@ Expected: tests PASS, build succeeds. On the current healthy host, `doctor` prin
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/doctor/collect.go cmd/umbra/doctor.go cmd/umbra/doctor_test.go cmd/umbra/root.go
+git add cmd/umbra/doctor.go cmd/umbra/doctor_test.go cmd/umbra/root.go
 git commit -m "feat(doctor): evidence collection, load canary, and CLI"
 ```
 
