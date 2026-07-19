@@ -431,6 +431,24 @@ func TestClassifyIgnoresNetstackLogLinesWhenGuestsAreReachable(t *testing.T) {
 	}
 }
 
+// Health is a string enum, so its zero value ("") is a fourth, undocumented
+// state that would marshal into --json as "health":"". Every verdict must set
+// it explicitly; this guard fails loudly if any future rung forgets.
+func TestClassifyAlwaysSetsHealth(t *testing.T) {
+	cases := []Evidence{
+		{DaemonUp: false},
+		{DaemonUp: true, Guests: []GuestEvidence{{Name: "g", State: "running", IP: ""}}},
+		{DaemonUp: true, Guests: []GuestEvidence{{Name: "g", State: "running", IP: "10.0.0.1", SSHProbed: true, SSHOK: false}}},
+	}
+	for i, e := range cases {
+		for _, v := range Classify(e) {
+			if v.Health == "" {
+				t.Errorf("case %d: verdict %v has empty Health", i, v.Rung)
+			}
+		}
+	}
+}
+
 func TestClassifyHealthyHostReportsNoFailures(t *testing.T) {
 	e := Evidence{
 		DaemonUp:    true,
