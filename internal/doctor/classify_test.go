@@ -89,7 +89,14 @@ func TestClassifyHealthyHostReportsNoFailures(t *testing.T) {
 			{Name: "fwb-ci5", State: "running", IP: "192.168.127.10", SSHProbed: true, SSHOK: true},
 		},
 	}
-	for _, v := range Classify(e) {
+	got := Classify(e)
+	// Assert on the slice itself, not just its contents: a healthy host emits
+	// NO verdicts at all, so a range-only check would pass vacuously and keep
+	// passing even if the ladder stopped working entirely.
+	if len(got) != 0 {
+		t.Fatalf("healthy host produced %d verdict(s), want 0: %+v", len(got), got)
+	}
+	for _, v := range got {
 		if v.Health == Fail {
 			t.Errorf("healthy host produced a failing verdict: %+v", v)
 		}
