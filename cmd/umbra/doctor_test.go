@@ -36,12 +36,23 @@ func TestDoctorCanaryDetectsSignalExitCodes(t *testing.T) {
 	}{
 		{"FAULT rc=132\n", true},
 		{"FAULT rc=139\n", true},
+		// A CLEAN-LOOKING output. Note what this does and does NOT assert:
+		// canaryFaulted is a signature matcher, so "no signature" is all it
+		// reports. It is NOT a clean bill of health, and the case below pins
+		// that distinction — the version of this test that stopped here is
+		// what let a canary that never ran be recorded as "ran, found nothing".
 		{"ok\n", false},
 	} {
 		got := canaryFaulted(c.out)
 		if got != c.want {
 			t.Errorf("canaryFaulted(%q) = %v, want %v", c.out, got, c.want)
 		}
+	}
+
+	// The same "ok\n" carries no completion sentinel, so the RESULT must be
+	// inconclusive rather than a clean canary.
+	if res, detail := canaryOutcome("ok\n", nil); res.Ran || detail == "" {
+		t.Errorf("output with no completion sentinel must be inconclusive, got Ran=%v detail=%q", res.Ran, detail)
 	}
 }
 

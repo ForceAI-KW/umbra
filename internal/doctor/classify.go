@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
@@ -141,13 +142,23 @@ func classifyHostHardware(e Evidence) (Verdict, bool) {
 // RIGHT NOW running and unreachable, and at least two such guests are needed
 // before the fault is host-wide rather than per-guest.
 //
+// KNOWN RESIDUAL, not fixed: the correlation has no time dimension, so a
+// recent ordinary restart of two guests reproduces the signature. See
+// restartResidual for the full argument and for what fixing it would require —
+// the verdict discloses it to the operator in its own evidence.
+//
 // Returns (verdict, true) for both a conviction and an Unknown; the caller
 // distinguishes them by Health.
 func classifyNetstack(e Evidence) (Verdict, bool) {
+	// Both sides of this lookup are lowercased. macRe accepts A-F, so a daemon
+	// build that logged an uppercase MAC would fail every comparison against
+	// the lowercase registry value — and it would do so SILENTLY, because the
+	// guests do carry MACs and the tripwire below would therefore not fire.
+	// The rung would just quietly stop working.
 	logMACs := map[string]bool{}
 	for _, l := range e.LogLines {
 		if l.MAC != "" {
-			logMACs[l.MAC] = true
+			logMACs[normalizeMAC(l.MAC)] = true
 		}
 	}
 	if len(logMACs) == 0 {
@@ -169,12 +180,19 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 		return Verdict{}, false
 	}
 
-	// The wave-2 tripwire. Without MACs on the guests the correlation above is
-	// impossible, and the honest answer is "undiagnosed" — not a conviction on
-	// log evidence alone, and not silence, which would render an unpopulated
-	// field as health.
+	// The tripwire. SCOPED TO THE UNREACHABLE GUESTS, because those are the
+	// only ones the correlation below consumes. Scanning all of e.Guests (what
+	// this did before wave 4) let a single healthy guest with a MAC satisfy the
+	// check while every guest that MATTERED had none: the tripwire was skipped,
+	// `correlated` stayed 0, the rung fell through to the per-guest ladder, and
+	// netstack death became silently unevaluable. That is partial blindness
+	// rendered as a confident per-guest diagnosis.
+	//
+	// Without a MAC on the guests that matter, the correlation is impossible
+	// and the honest answer is "undiagnosed" — not a conviction on log evidence
+	// alone, and not silence, which would render an unpopulated field as health.
 	anyMAC := false
-	for _, g := range e.Guests {
+	for _, g := range unreachable {
 		if g.MAC != "" {
 			anyMAC = true
 			break
@@ -195,7 +213,7 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 
 	var correlated []string
 	for _, g := range unreachable {
-		if g.MAC != "" && logMACs[g.MAC] {
+		if g.MAC != "" && logMACs[normalizeMAC(g.MAC)] {
 			correlated = append(correlated, g.Name)
 		}
 	}
@@ -210,8 +228,119 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 			fmt.Sprintf("correlated guests: %v", correlated),
 			fmt.Sprintf("%d distinct MACs with 'cannot receive packets' since daemon start", len(logMACs)),
 			"live reachability check failed for each correlated guest",
+			fmt.Sprintf("log window scanned: current daemon lifetime, since %s", e.DaemonStart.Format(time.RFC3339)),
+			restartResidual,
 		},
 		NextAction: "cd ~/Desktop/projects/umbra && make build && make install",
+	}, true
+}
+
+// restartResidual is the KNOWN, UNELIMINATED false positive of the netstack
+// rung, disclosed in the verdict itself rather than buried in a comment the
+// operator will never read.
+//
+// "guest link <MAC> closed: cannot receive packets" is emitted by the SHUTDOWN
+// half of an ordinary `umbra stop && umbra start`. The correlation has no time
+// dimension, so two guests restarted within one daemon lifetime and still
+// booting satisfy every condition this rung checks and get told to rebuild
+// umbra. It is reachable through doctor's OWN advice: the guest-ssh-stall next
+// action is `umbra stop X && umbra start X`, so following doctor twice can
+// manufacture it.
+//
+// WHY IT IS DOCUMENTED RATHER THAN FIXED. Eliminating it needs the guest's
+// CURRENT BOOT time, so the log line can be required to POSTDATE it. No such
+// timestamp exists anywhere to pass in as evidence: registry.Machine carries
+// only CreatedAt (machine creation, not boot), vm.Info exposes
+// Name/State/IP/SSHPort/Zombie with no start time, the in-memory vm.instance
+// records none, and client.MachineView adds nothing further. Reading a boot
+// time inside Classify is impossible by construction — Classify is pure — and
+// synthesising one from anything else here would be a fabricated correlation
+// that reads as rigour while being a guess. Disclosing a residual beats faking
+// its absence. Removing it is a daemon change: record a per-machine start time
+// on state transition to running, surface it on vm.Info and MachineView, put it
+// on GuestEvidence, and gate the correlation on it.
+const restartResidual = "RESIDUAL: this rung has no time dimension — two guests restarted within this daemon lifetime and still booting can also produce this signature. Before rebuilding umbra, confirm neither guest was restarted recently."
+
+// normalizeMAC canonicalises a link-layer address for comparison. See the note
+// at the top of classifyNetstack for why this is not cosmetic.
+func normalizeMAC(mac string) string { return strings.ToLower(strings.TrimSpace(mac)) }
+
+// classifyMachineState renders a machine's LIFECYCLE state, before any network
+// or in-guest rung is meaningful. It returns (verdict, true) when the state
+// itself is the finding, and ok=false when the caller should carry on down the
+// ladder (running) or say nothing (stopped).
+//
+// Every vm.State is handled EXPLICITLY. Gating on `State != StateRunning` and
+// moving on — which is what this replaced — gave StateCrashed, StateStarting
+// and StateStopping ZERO verdicts and ZERO unprobed records, so a fleet with
+// one healthy guest and one crashed CI runner printed "healthy: no faults
+// detected" and exited 0. `umbra list` already prints `crashed*` for exactly
+// that machine, so doctor was strictly LESS informative than list about a
+// fault class list already names.
+func classifyMachineState(g GuestEvidence) (Verdict, bool) {
+	switch g.State {
+	case vm.StateRunning:
+		return Verdict{}, false // the ladder proper; not a lifecycle finding
+
+	case vm.StateStopped:
+		// The ONLY deliberately silent state, and the only one that is a
+		// legitimate resting place: the standby spare lives here, and doctor
+		// must not report the spare as a fault on every single run. doctor
+		// cannot know an operator's intent for a stopped machine, and `umbra
+		// list` already shows it, so inventing a verdict here would be noise
+		// that trains the operator to ignore output.
+		return Verdict{}, false
+
+	case vm.StateStarting, vm.StateStopping:
+		// TRANSIENT, so NOT a fault — doctor races `umbra start`/`umbra stop`
+		// routinely, and failing on that would make the watchdog stand down
+		// during an ordinary restart. But it is not silence either: while a
+		// machine is neither up nor down, every rung below is unevaluable, and
+		// rendering that as "no faults" is the exact defect this package
+		// exists to prevent. So: Unknown, named, and re-checkable.
+		return Verdict{
+			Rung: RungUnknown, Health: Unknown, Subject: g.Name,
+			Reason: fmt.Sprintf("machine is %s — a transient state, so no guest or CI rung can be evaluated for it yet", g.State),
+			Supporting: []string{
+				"this is not a fault: doctor observed the machine mid-transition",
+			},
+			NextAction: fmt.Sprintf("re-run doctor once the transition settles: umbra list (expect %s to reach running or stopped)", g.Name),
+		}, true
+
+	case vm.StateCrashed:
+		if g.Zombie {
+			// The worst case. umbrad asked the VM to stop, the stop never
+			// confirmed, and the handle is still live — so the guest may still
+			// be executing, holding CPU, memory and its netstack attachment,
+			// while umbra believes it is gone. Start refuses to relaunch until
+			// a stop confirms, so the remedy is a repeated stop, NOT a start.
+			return Verdict{
+				Rung: RungMachineCrashed, Health: Fail, Subject: g.Name,
+				Reason: "machine is crashed with an unconfirmed stop (zombie) — the VM may still be alive",
+				Supporting: []string{
+					"umbrad still holds a live VM handle for this machine, so it may still be running and consuming host CPU, memory and its netstack attachment",
+					"umbra start will refuse to relaunch it until a stop confirms",
+				},
+				NextAction: fmt.Sprintf("umbra stop %s (repeat until it reports stopped), then umbra start %s — do NOT umbra rm it while the handle is live", g.Name, g.Name),
+			}, true
+		}
+		return Verdict{
+			Rung: RungMachineCrashed, Health: Fail, Subject: g.Name,
+			Reason: "machine is crashed — it is neither running nor cleanly stopped, so it serves no CI",
+			Supporting: []string{
+				"a crashed machine is invisible to every rung below this one; nothing about its guest, runners or repos was probed",
+			},
+			NextAction: fmt.Sprintf("umbra start %s — if that fails, check the daemon log: umbra daemon status", g.Name),
+		}, true
+	}
+
+	// An unrecognised state means umbra grew a lifecycle state this classifier
+	// was never taught. Unknown, loudly — falling through to silence would
+	// re-open exactly the hole this function closed.
+	return Verdict{
+		Rung: RungUnknown, Health: Unknown, Subject: g.Name,
+		Reason:     fmt.Sprintf("machine is in an unrecognised state %q, which doctor cannot classify", g.State),
+		NextAction: "report this: umbra grew a machine state that internal/doctor does not handle",
 	}, true
 }
 
@@ -223,8 +352,12 @@ func classifyGuests(e Evidence) []Verdict {
 	var out []Verdict
 
 	for _, g := range e.Guests {
-		if g.State != vm.StateRunning {
+		if v, ok := classifyMachineState(g); ok {
+			out = append(out, v)
 			continue
+		}
+		if g.State != vm.StateRunning {
+			continue // stopped; see classifyMachineState for why that is silent
 		}
 		switch {
 		case g.IP == "":
@@ -269,10 +402,22 @@ func classifyRepos(e Evidence) []Verdict {
 			// the same fault as "the runner is offline", and a consumer keying
 			// remediation off Rung would otherwise act on a fault that was
 			// never actually diagnosed.
+			//
+			// The remedy depends on WHY. "install and authenticate the GitHub
+			// CLI" is actively misleading when gh is installed and
+			// authenticated and the call failed on a rate limit or an
+			// unresolvable repo — it sends the operator to re-do something
+			// that is already done while the real cause goes unexamined.
+			reason := "could not probe GitHub (gh missing, unauthenticated, or rate-limited)"
+			next := "install and authenticate the GitHub CLI: brew install gh && gh auth login"
+			if e.GHAvailable {
+				reason = "gh is installed but the GitHub probe did not complete (unauthenticated, rate-limited, or the repo could not be resolved from the runner unit name)"
+				next = fmt.Sprintf("check which of the three it is: gh auth status; gh api rate_limit; gh api repos/%s", r.Repo)
+			}
 			out = append(out, Verdict{
 				Rung: RungUnknown, Health: Unknown, Subject: r.Repo,
-				Reason:     "could not probe GitHub (gh missing, unauthenticated, or rate-limited)",
-				NextAction: "install and authenticate the GitHub CLI: brew install gh && gh auth login",
+				Reason:     reason,
+				NextAction: next,
 			})
 			continue
 		}

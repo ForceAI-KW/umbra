@@ -28,7 +28,15 @@ var (
 // correct-arch system binaries with zero Rosetta ambiguity, so a CPU-level
 // signal from either means the guest is miscomputing — a host fault, not a
 // config problem. Bounded on purpose: never leave stress running on a suspect host.
-const canaryScript = `set +e
+//
+// It ends by echoing canaryDoneSentinel. That sentinel is LOAD-BEARING, not
+// decoration: without proof the script reached its last line, "no FAULT in the
+// output" is indistinguishable from "the output stops early because ssh died,
+// the timeout tripped, or the guest wedged under the stress" — and a host sick
+// enough to drop ssh mid-stress is precisely the host this canary exists to
+// catch. canaryOutcome is the only correct reader of this output; do not add
+// another that checks for FAULT alone.
+var canaryScript = `set +e
 for i in $(seq 1 150); do
   curl --version >/dev/null 2>&1; RC=$?
   [ $RC -ne 0 ] && echo "FAULT rc=$RC"
@@ -39,8 +47,13 @@ for j in 1 2 3 4; do
     done ) &
 done
 wait
-echo CANARY_DONE
+echo ` + canaryDoneSentinel + `
 `
+
+// canaryDoneSentinel is printed by canaryScript's last line and checked by
+// canaryOutcome. Defined once and concatenated into the script so the emitter
+// and the reader cannot drift apart.
+const canaryDoneSentinel = "CANARY_DONE"
 
 // Timeouts. Every probe is bounded so that the fault doctor diagnoses cannot
 // also hang doctor — see sshProbeArgs for the same argument at the ssh layer.
@@ -58,6 +71,43 @@ func canaryFaulted(out string) bool {
 	return strings.Contains(out, "FAULT rc=132") || strings.Contains(out, "FAULT rc=139")
 }
 
+// canaryOutcome decides what a canary run actually PROVED, from its output and
+// the error the command exited with. It returns the result plus, when nothing
+// was proved, a non-empty detail for an Unprobed record.
+//
+// This function is the whole point of the C1 fix. The previous code discarded
+// the error and recorded CanaryResult{Ran: true, Faulted: canaryFaulted(out)}
+// unconditionally, so a canary that never completed — dead ssh, tripped
+// timeout, guest wedged under the stress — recorded a CLEAN reading for the
+// single most decisive rung in the system, and doctor answered "no fault"
+// about a probe that did not run.
+//
+// The asymmetry between the two branches is deliberate. A fault that WAS
+// OBSERVED is decisive on its own: a native binary took SIGILL, and that
+// observation does not become less true because the session died a moment
+// later, so it is honoured even alongside an error. Only the ABSENCE of a
+// fault needs proof of completion, because absence is exactly what a truncated
+// run counterfeits.
+func canaryOutcome(out string, err error) (doctor.CanaryResult, string) {
+	if canaryFaulted(out) {
+		return doctor.CanaryResult{
+			Ran: true, Faulted: true,
+			Detail: "native binary exited with SIGILL/SIGSEGV under load",
+		}, ""
+	}
+	if err != nil {
+		return doctor.CanaryResult{}, fmt.Sprintf(
+			"the load canary did not complete: %v (ssh dropped, the %s timeout tripped, or the guest wedged under the stress) — no CPU-level signal was seen, but the run proves nothing either way",
+			err, canaryTimeout)
+	}
+	if !strings.Contains(out, canaryDoneSentinel) {
+		return doctor.CanaryResult{}, fmt.Sprintf(
+			"the load canary exited without error but never printed its %s completion sentinel, so its output is truncated and a clean reading cannot be trusted",
+			canaryDoneSentinel)
+	}
+	return doctor.CanaryResult{Ran: true, Faulted: false}, ""
+}
+
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Diagnose umbra/CI faults and print the next action",
@@ -70,7 +120,9 @@ var doctorCmd = &cobra.Command{
 
 		if doctorJSON {
 			enc := json.NewEncoder(os.Stdout)
-			if err := enc.Encode(newDoctorReport(doctorDeep, verdicts)); err != nil {
+			// ev.DeepRun, not the flag: the report describes the run that actually
+			// happened, from the same evidence the classifier saw.
+			if err := enc.Encode(newDoctorReport(ev.DeepRun, verdicts)); err != nil {
 				return err
 			}
 		} else {
@@ -237,9 +289,14 @@ func printVerdicts(vs []doctor.Verdict) {
 // A stopped machine is NOT unprobed: the ladder skips it by design, so
 // reporting it would be noise, not honesty.
 func guestEvidenceFor(mv *client.MachineView) (doctor.GuestEvidence, []doctor.Unprobed) {
-	g := doctor.GuestEvidence{Name: mv.Name, State: mv.State, IP: mv.IP, MAC: mv.MAC}
+	g := doctor.GuestEvidence{
+		Name: mv.Name, State: mv.State, IP: mv.IP, MAC: mv.MAC, Zombie: mv.Zombie,
+	}
 
 	if mv.State != vm.StateRunning {
+		// Not probed further, and correctly so — but NOT dropped either: the
+		// classifier renders every non-running state (crashed, zombie,
+		// starting, stopping) from the State and Zombie fields above.
 		return g, nil
 	}
 	if mv.SSHPort == 0 {
@@ -301,10 +358,16 @@ func probeGuest(ctx context.Context, mv *client.MachineView) (doctor.GuestEviden
 		cArgs := sshProbeArgs(mv, []string{"bash", "-s"})
 		c := exec.CommandContext(cCtx, sshPath, cArgs[1:]...)
 		c.Stdin = strings.NewReader(canaryScript)
-		out, _ := c.CombinedOutput()
-		g.LoadCanary = doctor.CanaryResult{Ran: true, Faulted: canaryFaulted(string(out))}
-		if g.LoadCanary.Faulted {
-			g.LoadCanary.Detail = "native binary exited with SIGILL/SIGSEGV under load"
+		out, err := c.CombinedOutput()
+		res, cannotConclude := canaryOutcome(string(out), err)
+		g.LoadCanary = res
+		if cannotConclude != "" {
+			unprobed = append(unprobed, doctor.Unprobed{
+				Subject:    mv.Name,
+				What:       "load canary",
+				Detail:     cannotConclude,
+				NextAction: fmt.Sprintf("re-run: umbra doctor --deep. If it keeps failing to complete, the guest is the suspect — umbra stop %s && umbra start %s, then retry", mv.Name, mv.Name),
+			})
 		}
 	}
 	return g, unprobed

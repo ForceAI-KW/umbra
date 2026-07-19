@@ -46,6 +46,15 @@ const (
 	// RungDaemonDown means umbrad itself is not answering — no guest fact
 	// below this can even be collected, let alone trusted.
 	RungDaemonDown
+	// RungMachineCrashed means a machine is in vm.StateCrashed: it is neither
+	// up nor cleanly down, so every rung below it is unevaluable FOR THAT
+	// MACHINE. It sits here because it is a lifecycle fact established before
+	// any network or in-guest probe is even meaningful.
+	//
+	// It covers the zombie sub-case too (crashed with a live VM handle — the
+	// guest may STILL BE RUNNING and holding CPU, memory and its netstack
+	// attachment). The verdict distinguishes them by NextAction.
+	RungMachineCrashed
 	// RungNetstackDead means the host's user-mode network stack has stopped
 	// forwarding for guests generally; every guest looks broken at once.
 	RungNetstackDead
@@ -80,6 +89,8 @@ func (r Rung) String() string {
 		return "healthy"
 	case RungDaemonDown:
 		return "daemon-down"
+	case RungMachineCrashed:
+		return "machine-crashed"
 	case RungNetstackDead:
 		return "netstack-dead"
 	case RungGuestNoIP:
@@ -131,6 +142,13 @@ type GuestEvidence struct {
 	Name  string
 	State vm.State // the upstream enum, not a second copy of it
 	IP    string
+
+	// Zombie mirrors client.MachineView.Zombie: the machine is crashed AND
+	// umbrad still holds a live VM handle for it, because a stop was requested
+	// and never confirmed. The guest may STILL BE RUNNING. `umbra list` already
+	// surfaces this as `crashed*`; doctor must not be less informative than
+	// list about a fault class list already names.
+	Zombie bool
 
 	// MAC is this guest's link-layer address as recorded in the machine
 	// registry, used to CORRELATE netstack log lines with live guests.
@@ -196,13 +214,25 @@ type Unprobed struct {
 
 // Evidence is the complete observation set handed to Classify.
 type Evidence struct {
-	DaemonUp    bool
+	DaemonUp bool
+	// DaemonStart is when the current daemon lifetime began, per the log's
+	// start marker. Classify reports it in the netstack verdict's evidence so
+	// the operator can see WHICH window the log correlation covered — a
+	// verdict scoped to an invisible window is not auditable.
 	DaemonStart time.Time
+	// GHAvailable reports whether the gh binary was on PATH. Classify uses it
+	// to tell "gh is missing" apart from "gh is installed but the call failed
+	// (unauthenticated, rate-limited, repo not resolvable)": those need
+	// different remedies, and advising `brew install gh` to someone who
+	// already has it authenticated sends them nowhere.
 	GHAvailable bool
-	DeepRun     bool
-	LogLines    []LogLine
-	Guests      []GuestEvidence
-	Repos       []RepoEvidence
+	// DeepRun records whether --deep was requested. It is what the --json
+	// `deep` field is derived from, so the report describes the run that
+	// actually happened rather than a separately-read flag.
+	DeepRun  bool
+	LogLines []LogLine
+	Guests   []GuestEvidence
+	Repos    []RepoEvidence
 
 	// Unprobed carries the probes that could not run. See Unprobed's doc.
 	Unprobed []Unprobed
