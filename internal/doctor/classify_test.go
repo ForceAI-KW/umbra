@@ -95,3 +95,114 @@ func TestClassifyHealthyHostReportsNoFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifySingleGuestNoIPSuggestsRecreate(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true,
+		Guests:   []GuestEvidence{{Name: "fwb-ci5", State: "running", IP: ""}},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungGuestNoIP {
+		t.Fatalf("verdicts = %+v, want one RungGuestNoIP", got)
+	}
+	if got[0].Subject != "fwb-ci5" {
+		t.Errorf("Subject = %q, want %q", got[0].Subject, "fwb-ci5")
+	}
+}
+
+// THE TWO-GUEST DISCRIMINATOR. Two independent guests failing identically is
+// host-level, not two coincidentally damaged images — and it rules out a
+// ~20-minute recreate in about 2 minutes.
+func TestClassifyTwoGuestsNoIPIsHostLevel(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true,
+		Guests: []GuestEvidence{
+			{Name: "fwb-ci5", State: "running", IP: ""},
+			{Name: "fwb-ci2", State: "running", IP: "", Spare: true},
+		},
+	}
+	got := Classify(e)
+	if len(got) != 1 {
+		t.Fatalf("len(verdicts) = %d, want 1 host-level verdict", len(got))
+	}
+	if got[0].Rung != RungHostHardware {
+		t.Errorf("Rung = %v, want RungHostHardware", got[0].Rung)
+	}
+	if got[0].Subject != "" {
+		t.Errorf("Subject = %q, want empty (host-wide)", got[0].Subject)
+	}
+}
+
+// Closes a coverage gap found reviewing Task 3: anyRunningGuestUnreachable
+// has two legs (no IP, and probed-but-ssh-failed) and only the first was
+// exercised. A guest that HAS an IP but whose ssh is dead is a real netstack
+// partial-failure shape, so rung 1 must still convict on it.
+func TestClassifyNetstackConvictsWhenSSHFailsDespiteIP(t *testing.T) {
+	now := time.Now()
+	e := Evidence{
+		DaemonUp:    true,
+		DaemonStart: now.Add(-time.Minute),
+		LogLines: []LogLine{
+			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:01"},
+			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:02"},
+		},
+		Guests: []GuestEvidence{
+			{Name: "fwb-ci5", State: "running", IP: "192.168.127.10", SSHProbed: true, SSHOK: false},
+		},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungNetstackDead {
+		t.Fatalf("verdicts = %+v, want a single RungNetstackDead", got)
+	}
+}
+
+func TestClassifySSHStall(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true,
+		Guests: []GuestEvidence{
+			{Name: "fwb-ci5", State: "running", IP: "192.168.127.10", SSHProbed: true, SSHOK: false},
+		},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungGuestSSHStall {
+		t.Fatalf("verdicts = %+v, want one RungGuestSSHStall", got)
+	}
+}
+
+func TestClassifyInactiveRunnerUnit(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true,
+		Guests: []GuestEvidence{{
+			Name: "fwb-ci5", State: "running", IP: "192.168.127.10",
+			SSHProbed: true, SSHOK: true,
+			Runners: []RunnerEvidence{
+				{Unit: "actions.runner.ForceAI-KW-force-website-builder.fwb-ci5-1.service", Active: false},
+			},
+		}},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungRunnerServiceDown {
+		t.Fatalf("verdicts = %+v, want one RungRunnerServiceDown", got)
+	}
+}
+
+// The bottom rung: stock arm64 binaries taking CPU-level signals means the
+// guest is miscomputing. No amount of RAM/CPU tuning fixes that.
+func TestClassifyLoadCanaryFaultIsHostHardware(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true,
+		DeepRun:  true,
+		Guests: []GuestEvidence{{
+			Name: "fwb-ci5", State: "running", IP: "192.168.127.10",
+			SSHProbed: true, SSHOK: true,
+			LoadCanary: CanaryResult{Ran: true, Faulted: true, Detail: "curl exited 132 (SIGILL)"},
+		}},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungHostHardware {
+		t.Fatalf("verdicts = %+v, want one RungHostHardware", got)
+	}
+	if got[0].NextAction == "" {
+		t.Error("host-hardware verdict must carry the power-cycle next action")
+	}
+}
