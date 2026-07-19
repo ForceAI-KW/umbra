@@ -19,9 +19,13 @@ const (
 	Unknown Health = "unknown"
 )
 
-// Rung identifies a step on the triage ladder, ordered by blast radius:
-// host-wide faults first, then per-guest, then per-repo. RungNone is the
-// zero value and means healthy.
+// Rung identifies a step on the triage ladder, ordered by triage sequence:
+// cheapest and most common causes first, and RungHostHardware last because
+// it is the diagnosis of exclusion — you only conclude the hardware is bad
+// after everything cheaper has been ruled out. Note this is deliberately NOT
+// blast-radius order: host-wide rungs terminate the ladder in Classify by
+// explicit control flow, not by their position here. RungNone is the zero
+// value and means healthy.
 type Rung int
 
 const (
@@ -60,6 +64,11 @@ func (r Rung) String() string {
 	}
 	return "unknown"
 }
+
+// MarshalText makes Rung serialize as its stable slug rather than its
+// integer value — the --json output is a watchdog contract, and an integer
+// that shifts when a rung is inserted would silently break it.
+func (r Rung) MarshalText() ([]byte, error) { return []byte(r.String()), nil }
 
 // LogLine is one parsed line of umbrad.err.log, already filtered to the
 // current daemon lifetime by ScanLog.
