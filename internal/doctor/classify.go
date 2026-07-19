@@ -1,6 +1,9 @@
 package doctor
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Classify turns observed Evidence into ordered findings. It is pure: no I/O,
 // no clock, no filesystem. That is what lets every rung be tested with a
@@ -171,8 +174,18 @@ func classifyRepos(e Evidence) []Verdict {
 			})
 			continue
 		}
-		for name, online := range r.RunnerOnline {
-			if !online {
+		// Sort the runner names before emitting. Go randomises map iteration
+		// order, and Classify promises ORDERED findings — without this, a repo
+		// with two offline runners reports them in a different order on every
+		// run, churning --json output and seeding a flaky test the first time
+		// anyone asserts on multi-runner results.
+		names := make([]string, 0, len(r.RunnerOnline))
+		for name := range r.RunnerOnline {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if !r.RunnerOnline[name] {
 				out = append(out, Verdict{
 					Rung: RungRunnerOffline, Health: Fail, Subject: r.Repo,
 					Reason:     fmt.Sprintf("registered runner %q is offline", name),

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -258,5 +259,42 @@ func TestClassifyMissingGHIsUnknownNotPass(t *testing.T) {
 	}
 	if got[0].Health == Pass {
 		t.Error("an unprobed repo was reported as passing")
+	}
+}
+
+// Go randomises map iteration order, so a repo with several offline runners
+// would otherwise report them differently on every run. Classify promises
+// ordered findings, and --json output that reshuffles between identical runs
+// is both a bad diff and a flaky test waiting to happen.
+func TestClassifyOfflineRunnerOrderIsDeterministic(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true, GHAvailable: true,
+		Repos: []RepoEvidence{{
+			Repo: "ForceAI-KW/force-website-builder", Probed: true,
+			RunnerOnline: map[string]bool{"zeta-1": false, "alpha-1": false, "mid-1": false},
+		}},
+	}
+	var first []string
+	for run := 0; run < 20; run++ {
+		var got []string
+		for _, v := range Classify(e) {
+			got = append(got, v.Reason)
+		}
+		if len(got) != 3 {
+			t.Fatalf("run %d: got %d verdicts, want 3", run, len(got))
+		}
+		if first == nil {
+			first = got
+			continue
+		}
+		for i := range got {
+			if got[i] != first[i] {
+				t.Fatalf("run %d: verdict order changed at %d: %q != %q", run, i, got[i], first[i])
+			}
+		}
+	}
+	// Sorted order means alpha-1 first, zeta-1 last.
+	if !strings.Contains(first[0], "alpha-1") || !strings.Contains(first[2], "zeta-1") {
+		t.Errorf("verdicts not in sorted order: %v", first)
 	}
 }
