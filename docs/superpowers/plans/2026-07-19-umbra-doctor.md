@@ -617,6 +617,29 @@ func TestClassifyTwoGuestsNoIPIsHostLevel(t *testing.T) {
 	}
 }
 
+// Closes a coverage gap found reviewing Task 3: anyRunningGuestUnreachable
+// has two legs (no IP, and probed-but-ssh-failed) and only the first was
+// exercised. A guest that HAS an IP but whose ssh is dead is a real netstack
+// partial-failure shape, so rung 1 must still convict on it.
+func TestClassifyNetstackConvictsWhenSSHFailsDespiteIP(t *testing.T) {
+	now := time.Now()
+	e := Evidence{
+		DaemonUp:    true,
+		DaemonStart: now.Add(-time.Minute),
+		LogLines: []LogLine{
+			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:01"},
+			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:02"},
+		},
+		Guests: []GuestEvidence{
+			{Name: "fwb-ci5", State: "running", IP: "192.168.127.10", SSHProbed: true, SSHOK: false},
+		},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungNetstackDead {
+		t.Fatalf("verdicts = %+v, want a single RungNetstackDead", got)
+	}
+}
+
 func TestClassifySSHStall(t *testing.T) {
 	e := Evidence{
 		DaemonUp: true,
