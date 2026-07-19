@@ -213,3 +213,50 @@ func TestClassifyLoadCanaryFaultIsHostHardware(t *testing.T) {
 		t.Error("host-hardware verdict must carry the power-cycle next action")
 	}
 }
+
+func TestClassifyStaleRunnerRegistration(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true, GHAvailable: true,
+		Repos: []RepoEvidence{{
+			Repo: "ForceAI-KW/whatsapp-broadcaster", Probed: true,
+			RunnerOnline: map[string]bool{"fwb-ci5-1": false},
+		}},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungRunnerOffline {
+		t.Fatalf("verdicts = %+v, want one RungRunnerOffline", got)
+	}
+}
+
+func TestClassifyBillingLockout(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true, GHAvailable: true,
+		Repos: []RepoEvidence{{
+			Repo: "ForceAI-KW/force-website-builder", Probed: true,
+			RunnerOnline:   map[string]bool{"fwb-ci5-1": true},
+			BillingLockout: true,
+		}},
+	}
+	got := Classify(e)
+	if len(got) != 1 || got[0].Rung != RungBillingLockout {
+		t.Fatalf("verdicts = %+v, want one RungBillingLockout", got)
+	}
+}
+
+// An absent probe must never be reportable as health. Silence is not success.
+func TestClassifyMissingGHIsUnknownNotPass(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true, GHAvailable: false,
+		Repos: []RepoEvidence{{Repo: "ForceAI-KW/force-website-builder", Probed: false}},
+	}
+	got := Classify(e)
+	if len(got) != 1 {
+		t.Fatalf("len(verdicts) = %d, want 1", len(got))
+	}
+	if got[0].Health != Unknown {
+		t.Errorf("Health = %q, want %q", got[0].Health, Unknown)
+	}
+	if got[0].Health == Pass {
+		t.Error("an unprobed repo was reported as passing")
+	}
+}

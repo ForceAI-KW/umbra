@@ -146,5 +146,40 @@ func classifyGuests(e Evidence) []Verdict {
 	return append(out, classifyRepos(e)...)
 }
 
-// classifyRepos is filled in by Task 5. Declared here so Task 4 compiles.
-func classifyRepos(e Evidence) []Verdict { return nil }
+// classifyRepos covers the GitHub-side rungs. These matter because a perfectly
+// healthy umbra host still leaves every PR blocked when the runner registration
+// is stale or the org is billing-locked — and all three states look alike from
+// the outside: billing failures die in ~3s, offline runners queue forever, and
+// netstack death queues AND makes guests unreachable.
+func classifyRepos(e Evidence) []Verdict {
+	var out []Verdict
+	for _, r := range e.Repos {
+		if !r.Probed {
+			out = append(out, Verdict{
+				Rung: RungRunnerOffline, Health: Unknown, Subject: r.Repo,
+				Reason:     "could not probe GitHub (gh missing, unauthenticated, or rate-limited)",
+				NextAction: "install and authenticate the GitHub CLI: brew install gh && gh auth login",
+			})
+			continue
+		}
+		if r.BillingLockout {
+			out = append(out, Verdict{
+				Rung: RungBillingLockout, Health: Fail, Subject: r.Repo,
+				Reason:     "jobs are failing in ~3s with no runner assigned and zero steps",
+				Evidence:   []string{"signature: runner_name empty, steps empty, ~3s duration"},
+				NextAction: "clear the org billing block: GitHub org -> Settings -> Billing & plans (only the org owner can do this)",
+			})
+			continue
+		}
+		for name, online := range r.RunnerOnline {
+			if !online {
+				out = append(out, Verdict{
+					Rung: RungRunnerOffline, Health: Fail, Subject: r.Repo,
+					Reason:     fmt.Sprintf("registered runner %q is offline", name),
+					NextAction: fmt.Sprintf("umbra runner add <machine> --repo %s, then delete the stale registration via: gh api --method DELETE repos/%s/actions/runners/<id>", r.Repo, r.Repo),
+				})
+			}
+		}
+	}
+	return out
+}
