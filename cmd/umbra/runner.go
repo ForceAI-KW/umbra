@@ -211,7 +211,11 @@ func runRunnerList(cmd *cobra.Command, args []string) error {
 	// that's what stops the glob from expanding against local files (or the
 	// empty string, if none match) before it ever reaches systemctl on the
 	// guest. Don't "simplify" this to an unquoted or double-quoted glob.
-	sArgs := sshArgs(mv, []string{"systemctl", "list-units", `'actions.runner.*'`, "--no-legend"})
+	// --all for the same reason doctor needs it (C5): without it systemd omits
+	// inactive units, so `runner list` silently hides a stopped runner — the
+	// one state the operator most needs to see from a command that claims to
+	// list installed units. HardenScript already uses --all; match it.
+	sArgs := sshArgs(mv, []string{"systemctl", "list-units", `'actions.runner.*'`, "--all", "--no-legend"})
 	out, err := exec.CommandContext(cmd.Context(), sshPath, sArgs[1:]...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("listing runner units on %s: %w\n%s", machine, err, strings.TrimSpace(string(out)))

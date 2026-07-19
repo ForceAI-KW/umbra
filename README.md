@@ -126,13 +126,19 @@ umbra stats                      # live cpu/mem/swap/disk table across all machi
 ```sh
 umbra doctor                     # classify the fault and print the next action (read-only)
 umbra doctor --json              # same, machine-readable (watchdog probe)
-umbra doctor --deep              # also run a bounded ~60s native-binary load canary
+umbra doctor --deep              # also run a bounded load canary (~60s per RUNNING guest)
 ```
 
 `doctor` walks a triage ladder — daemon down, host netstack death, guest with no IP,
 guest whose ssh stalls, inactive runner unit, stale runner registration, GitHub billing
 lockout, and finally host hardware — and reports the rung it matched plus the exact
 command to run next. It exits 1 when it finds a fault, 0 when it does not.
+
+A probe that cannot be **run** — no `gh`, no `ssh`, an unreadable `umbrad.err.log`, a
+guest with no forwarded ssh port — is reported as `unknown`, never as healthy. `unknown`
+does not set the exit code: it means nothing was diagnosed, which is not the same as
+finding nothing wrong. `--json` adds `healthy` and `unknown_only` so a watchdog does not
+have to reimplement that rule.
 
 It is **diagnose-only**: the default run never mutates host or guest state. `--deep` opts
 into a bounded load canary, which is the only way to detect a host-hardware fault (stock

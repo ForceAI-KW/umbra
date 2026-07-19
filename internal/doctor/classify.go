@@ -8,13 +8,6 @@ import (
 	"github.com/ForceAI-KW/umbra/internal/vm"
 )
 
-// stateRunning is the one machine state the ladder branches on. It is derived
-// from the upstream enum rather than written as a literal so that renaming
-// vm.StateRunning breaks this build instead of silently making every rung
-// stop matching. (Importing vm costs nothing here: it is a constant, and
-// Classify stays pure.)
-const stateRunning = string(vm.StateRunning)
-
 // Classify turns observed Evidence into ordered findings. It is pure: no I/O,
 // no clock, no filesystem. That is what lets every rung be tested with a
 // literal Evidence struct instead of a deliberately broken host.
@@ -30,31 +23,60 @@ const stateRunning = string(vm.StateRunning)
 //  3. Netstack dead — host-wide, but log-derived, so it yields to tier 2.
 //
 // Everything below that is per-guest or per-repo and is reported together.
+//
+// Verdicts for probes that could not RUN (Evidence.Unprobed) are appended to
+// EVERY return path, including the terminating tiers. A terminating tier
+// answers "what is the fault"; an unprobed record answers "what did we fail
+// to look at" — suppressing the second because the first fired would recreate
+// the silence-as-health bug at a different layer.
 func Classify(e Evidence) []Verdict {
+	unknowns := classifyUnprobed(e)
+
 	if !e.DaemonUp {
-		return []Verdict{{
+		return append([]Verdict{{
 			Rung:       RungDaemonDown,
 			Health:     Fail,
 			Reason:     "umbrad is not responding on its API socket",
 			NextAction: "umbra daemon install",
-		}}
+		}}, unknowns...)
 	}
 
 	if v, ok := classifyHostHardware(e); ok {
-		return []Verdict{v}
+		return append([]Verdict{v}, unknowns...)
 	}
 
 	v, ok := classifyNetstack(e)
 	if ok && v.Health == Fail {
-		return []Verdict{v}
+		return append([]Verdict{v}, unknowns...)
 	}
 	// An Unknown netstack verdict means the probe could not be evaluated. That
 	// degrades this one rung; it must not swallow the rest of the diagnosis.
-	var out []Verdict
+	out := unknowns
 	if ok {
 		out = append(out, v)
 	}
 	return append(out, classifyGuests(e)...)
+}
+
+// classifyUnprobed renders every probe the collector could not run as an
+// explicit Unknown verdict. Health is never Pass here — "we did not look" and
+// "we looked and it was fine" must not collapse into the same output.
+func classifyUnprobed(e Evidence) []Verdict {
+	var out []Verdict
+	for _, u := range e.Unprobed {
+		v := Verdict{
+			Rung:       RungUnknown,
+			Health:     Unknown,
+			Subject:    u.Subject,
+			Reason:     fmt.Sprintf("could not probe %s", u.What),
+			NextAction: u.NextAction,
+		}
+		if u.Detail != "" {
+			v.Supporting = []string{u.Detail}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // classifyHostHardware covers the two host-level signals that are observed
@@ -69,7 +91,7 @@ func classifyHostHardware(e Evidence) (Verdict, bool) {
 	var noIP []string
 	var canary []string
 	for _, g := range e.Guests {
-		if g.State == stateRunning && g.IP == "" {
+		if g.State == vm.StateRunning && g.IP == "" {
 			noIP = append(noIP, g.Name)
 		}
 		if g.LoadCanary.Ran && g.LoadCanary.Faulted {
@@ -97,7 +119,7 @@ func classifyHostHardware(e Evidence) (Verdict, bool) {
 		Rung:       RungHostHardware,
 		Health:     Fail,
 		Reason:     strings.Join(reasons, "; "),
-		Evidence:   evidence,
+		Supporting: evidence,
 		NextAction: "full power-cycle (shut down, wait, power on) then run Apple Diagnostics — config changes cannot fix miscomputing hardware, and do NOT recreate guests on this boot",
 	}, true
 }
@@ -134,7 +156,7 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 
 	var unreachable []GuestEvidence
 	for _, g := range e.Guests {
-		if g.State != stateRunning {
+		if g.State != vm.StateRunning {
 			continue
 		}
 		if g.IP == "" || (g.SSHProbed && !g.SSHOK) {
@@ -163,7 +185,7 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 			Rung:   RungUnknown,
 			Health: Unknown,
 			Reason: "cannot evaluate the netstack rung: no guest MAC available to correlate against the netstack log lines",
-			Evidence: []string{
+			Supporting: []string{
 				fmt.Sprintf("%d distinct MACs with 'cannot receive packets' since daemon start", len(logMACs)),
 				fmt.Sprintf("%d running guest(s) unreachable, none carrying a MAC", len(unreachable)),
 			},
@@ -184,7 +206,7 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 		Rung:   RungNetstackDead,
 		Health: Fail,
 		Reason: fmt.Sprintf("%d running guests are unreachable AND named by netstack errors in the current daemon lifetime", len(correlated)),
-		Evidence: []string{
+		Supporting: []string{
 			fmt.Sprintf("correlated guests: %v", correlated),
 			fmt.Sprintf("%d distinct MACs with 'cannot receive packets' since daemon start", len(logMACs)),
 			"live reachability check failed for each correlated guest",
@@ -201,7 +223,7 @@ func classifyGuests(e Evidence) []Verdict {
 	var out []Verdict
 
 	for _, g := range e.Guests {
-		if g.State != stateRunning {
+		if g.State != vm.StateRunning {
 			continue
 		}
 		switch {
@@ -258,7 +280,7 @@ func classifyRepos(e Evidence) []Verdict {
 			out = append(out, Verdict{
 				Rung: RungBillingLockout, Health: Fail, Subject: r.Repo,
 				Reason:     "jobs are failing in ~3s with no runner assigned and zero steps",
-				Evidence:   []string{"signature: runner_name empty, steps empty, ~3s duration"},
+				Supporting: []string{"signature: runner_name empty, steps empty, ~3s duration"},
 				NextAction: "clear the org billing block: GitHub org -> Settings -> Billing & plans (only the org owner can do this)",
 			})
 			continue

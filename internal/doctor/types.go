@@ -7,7 +7,11 @@
 // destructive, and impossible to reproduce on demand.
 package doctor
 
-import "time"
+import (
+	"time"
+
+	"github.com/ForceAI-KW/umbra/internal/vm"
+)
 
 // Health is the outcome of a single probe. Unknown means the probe could
 // not run (no gh, guest unreachable) — it is never rendered as pass.
@@ -125,7 +129,7 @@ type RunnerEvidence struct {
 // GuestEvidence is everything observed about one machine.
 type GuestEvidence struct {
 	Name  string
-	State string // "running" | "stopped" | ... — mirrors vm.State
+	State vm.State // the upstream enum, not a second copy of it
 	IP    string
 
 	// MAC is this guest's link-layer address as recorded in the machine
@@ -167,6 +171,24 @@ type RepoEvidence struct {
 	BillingLockout bool            // recent jobs: ~3s, empty runner_name, zero steps
 }
 
+// Unprobed records a probe the collector could not RUN AT ALL — ssh missing
+// from PATH, no forwarded ssh port, an unreadable umbrad.err.log, an
+// unavailable machine list.
+//
+// It exists because the collector's silence was previously indistinguishable
+// from health: with no ssh binary and no readable log, doctor printed
+// "healthy: no faults detected" and exited 0. Classify honours "unprobed is
+// never pass", but only for facts it is actually told about — this is how the
+// collector tells it. Every entry becomes an explicit Unknown verdict.
+//
+// Subject is empty for host-wide probes, otherwise the guest or repo name.
+type Unprobed struct {
+	Subject    string
+	What       string // the probe, e.g. "ssh", "umbrad.err.log", "machine list"
+	Detail     string // why it could not run
+	NextAction string // optional; how the operator makes the probe possible
+}
+
 // Evidence is the complete observation set handed to Classify.
 type Evidence struct {
 	DaemonUp    bool
@@ -176,15 +198,22 @@ type Evidence struct {
 	LogLines    []LogLine
 	Guests      []GuestEvidence
 	Repos       []RepoEvidence
+
+	// Unprobed carries the probes that could not run. See Unprobed's doc.
+	Unprobed []Unprobed
 }
 
 // Verdict is one finding. Subject is empty for host-wide rungs, otherwise
 // the guest or repo it applies to.
 type Verdict struct {
-	Rung       Rung     `json:"rung"`
-	Health     Health   `json:"health"`
-	Subject    string   `json:"subject,omitempty"`
-	Reason     string   `json:"reason"`
-	Evidence   []string `json:"evidence,omitempty"`
+	Rung    Rung   `json:"rung"`
+	Health  Health `json:"health"`
+	Subject string `json:"subject,omitempty"`
+	Reason  string `json:"reason"`
+	// Supporting is the human-readable evidence behind this finding. Named
+	// Supporting rather than Evidence so it does not read as the package-level
+	// Evidence struct sitting a few lines above it; the json tag stays
+	// "evidence" because --json is a watchdog contract.
+	Supporting []string `json:"evidence,omitempty"`
 	NextAction string   `json:"next_action,omitempty"`
 }

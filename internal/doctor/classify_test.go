@@ -511,7 +511,7 @@ func TestClassifyHostHardwareMergesCanaryAndTwoGuestEvidence(t *testing.T) {
 	if len(got) != 1 || got[0].Rung != RungHostHardware {
 		t.Fatalf("verdicts = %+v, want a single RungHostHardware", got)
 	}
-	joined := strings.Join(got[0].Evidence, " | ")
+	joined := strings.Join(got[0].Supporting, " | ")
 	if !strings.Contains(joined, "SIGILL") {
 		t.Errorf("canary evidence dropped from the merged verdict: %q", joined)
 	}

@@ -113,8 +113,14 @@ otherwise mutate any machine — see the discriminator note below.
   therefore works only with guests that happen to be running already, and reports nothing
   when there is just one. `GuestEvidence.Spare` records *which* machine is the spare; it is
   not a signal that doctor started anything.
-- **Native-binary load canary** (rung 7): a bounded ~60s stress — `curl`/`openssl` loops
-  plus a parallel CPU burst — watching for SIGILL/SIGSEGV. Stock arm64 binaries taking
+- **Native-binary load canary** (rung 7): a bounded ~60s stress **per running guest**,
+  run sequentially — so a two-guest host costs ~2 minutes, not ~60s. It is deliberately
+  not parallelised: running the canary on every guest at once would put the host under a
+  combined load the single-guest signature was calibrated against, and a `--deep` run
+  already only happens when someone is sitting in front of it. The canary is
+  `curl`/`openssl` loops plus a parallel CPU burst — watching for SIGILL/SIGSEGV. Each
+  canary is additionally bounded by a hard 3-minute timeout, so a wedged guest cannot hang
+  the run. Stock arm64 binaries taking
   CPU-level signals means the guest is miscomputing, which is a host-level fault that no
   amount of RAM/CPU tuning will fix.
 
@@ -163,7 +169,63 @@ An `unknown` verdict degrades that one rung and lets the rest of the diagnosis c
 it never terminates the ladder.
 
 Any single probe failing degrades that rung to `unknown` and lets classification continue.
-One unreachable guest must not abort the whole diagnosis.
+One unreachable guest must not abort the whole diagnosis. This includes the machine list
+itself: if `umbrad` answers its ping but `ListMachines` fails, that is one `unknown`
+verdict, not an aborted run.
+
+### Silence is not health (the collection boundary)
+
+The classifier can only honour "unprobed is never pass" for facts it is *told about*. A
+collector that stays silent when a probe cannot run reintroduces the bug one layer down —
+and it did: with no `ssh` on `PATH`, no forwarded ssh port, or an unreadable
+`umbrad.err.log`, doctor printed `healthy: no faults detected` and exited 0.
+
+`Evidence.Unprobed` is the fix. Every probe the collector could not **run at all** is
+recorded there and becomes an explicit `unknown` verdict. The recorded cases are: the log
+missing / unparseable / carrying no daemon-start marker; the machine list unavailable; a
+running guest with no forwarded ssh port; `ssh` absent from `PATH`; and a repo whose `gh`
+probe failed. A **stopped** guest is deliberately *not* recorded — the ladder skips it by
+design, so reporting it would be noise rather than honesty.
+
+Unprobed verdicts are appended to **every** return path, including the terminating tiers.
+A terminating tier answers "what is the fault"; an unprobed record answers "what did we
+fail to look at", and suppressing the second because the first fired would recreate the
+same bug at a third layer.
+
+## Deriving the repos to probe
+
+The per-repo rungs need a repo list, and hardcoding one guarantees it stops matching the
+day a runner is added. Instead the list is derived from the systemd unit names already
+read out of each guest: `actions.runner.<owner>-<repo>.<instance>.service`.
+
+The separator is `-`, which is also legal inside both an owner and a repo name —
+`ForceAI-KW/umbra` and `Force/my-repo` produce indistinguishable scopes. So the scope is
+not split by string surgery: every possible split is offered as a candidate to
+`gh api repos/<owner>/<repo>`, and GitHub itself decides which is real. If none resolves
+— including because `gh` is missing, unauthenticated, or rate-limited — the repo is
+recorded `Probed:false` and reported `unknown`. A healthy reading is never fabricated.
+
+**Billing-lockout signature.** Only the newest failed workflow run is inspected: a lockout
+blocks *every* run, so if the newest failure does not carry the signature, the org is not
+locked out right now. Every failed job in that run must have an empty `runner_name`, zero
+`steps`, and a duration under 10s. One job that reached a runner means this is an ordinary
+CI failure — sending Ahmad to the org billing page for a broken test is exactly the
+misdiagnosis this tool exists to prevent. Runs older than 7 days are ignored, for the same
+stale-evidence reason as the log cutoff.
+
+## `--json` is a watchdog contract
+
+`~/.claude/scripts/ci-runner-guard.sh` consumes this output. The field names `rung`,
+`health` and `next_action`, and the rung slug strings, are **frozen**; changes may only be
+additive. Two additive convenience fields exist so consumers need not reimplement the
+exit-code rule:
+
+- `healthy` — true only when nothing at all was found: no fault *and* no unprobed probe.
+- `unknown_only` — findings exist but none is a fault. Not a clean bill of health, but
+  nothing was diagnosed either.
+
+`verdicts` is always an array, never `null`. The exit code is driven by `fail` alone;
+`unknown` never sets it, or every host without `gh` would look broken to the watchdog.
 
 ## Testing
 
