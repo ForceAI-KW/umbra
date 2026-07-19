@@ -121,6 +121,29 @@ umbra prune dev                  # reclaim guest disk: apt cache, docker prune, 
 umbra stats                      # live cpu/mem/swap/disk table across all machines
 ```
 
+## Diagnosing a fault
+
+```sh
+umbra doctor                     # classify the fault and print the next action (read-only)
+umbra doctor --json              # same, machine-readable (watchdog probe)
+umbra doctor --deep              # also run a bounded ~60s native-binary load canary
+```
+
+`doctor` walks a triage ladder — daemon down, host netstack death, guest with no IP,
+guest whose ssh stalls, inactive runner unit, stale runner registration, GitHub billing
+lockout, and finally host hardware — and reports the rung it matched plus the exact
+command to run next. It exits 1 when it finds a fault, 0 when it does not.
+
+It is **diagnose-only**: the default run never mutates host or guest state. `--deep` opts
+into a bounded load canary, which is the only way to detect a host-hardware fault (stock
+arm64 binaries crashing with SIGILL/SIGSEGV means the guest is miscomputing, and no amount
+of RAM or CPU tuning will fix that).
+
+Two rungs are worth knowing about because they look alike but need opposite fixes: a
+GitHub **billing lockout** makes jobs die in ~3s with no runner assigned, while an
+**offline runner** makes jobs queue forever. A third, **netstack death**, makes jobs queue
+*and* every guest unreachable. Never diagnose one as another.
+
 ## Rosetta / amd64 (M6)
 
 `docker run --platform linux/amd64 ...` works unchanged on the docker VM (and

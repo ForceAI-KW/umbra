@@ -33,7 +33,7 @@ Spec: `docs/superpowers/specs/2026-07-19-umbra-doctor-design.md`
 - Consumes: nothing.
 - Produces: `Health`, `Rung`, `Evidence`, `GuestEvidence`, `RunnerEvidence`, `RepoEvidence`, `CanaryResult`, `LogLine`, `Verdict`. Every later task depends on these exact names.
 
-- [ ] **Step 1: Create the types file**
+- [x] **Step 1: Create the types file**
 
 ```go
 // Package doctor diagnoses umbra host/guest/CI faults by classifying
@@ -164,12 +164,12 @@ type Verdict struct {
 }
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `go build ./internal/doctor/`
 Expected: no output (success).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/doctor/types.go
@@ -190,7 +190,7 @@ git commit -m "feat(doctor): core evidence and verdict types"
 
 **Why this task exists:** `umbrad.err.log` is append-only across daemon restarts and reboots. It currently contains netstack-death lines from a fault that a power-cycle already fixed. A scanner without this cutoff would report `netstack-dead` forever on a healthy host. This is the single most likely way doctor gives a confidently wrong answer.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package doctor
@@ -263,12 +263,12 @@ func TestScanLogNoListeningLineKeepsNothing(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/doctor/ -run TestScanLog -v`
 Expected: FAIL — `undefined: ScanLog`.
 
-- [ ] **Step 3: Implement the scanner**
+- [x] **Step 3: Implement the scanner**
 
 ```go
 package doctor
@@ -339,12 +339,12 @@ func ScanLog(r io.Reader) ([]LogLine, time.Time, error) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/doctor/ -run TestScanLog -v`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/doctor/logscan.go internal/doctor/logscan_test.go
@@ -363,7 +363,7 @@ git commit -m "feat(doctor): umbrad log scanner with daemon-lifetime cutoff"
 - Consumes: `Evidence`, `Verdict`, `Rung`, `LogLine`, `GuestEvidence` from Task 1.
 - Produces: `Classify(e Evidence) []Verdict`. Later tasks extend this same function; they do not add new entry points.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package doctor
@@ -472,12 +472,12 @@ func TestClassifyHealthyHostReportsNoFailures(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/doctor/ -run TestClassify -v`
 Expected: FAIL — `undefined: Classify`.
 
-- [ ] **Step 3: Implement Classify with the host-wide rungs**
+- [x] **Step 3: Implement Classify with the host-wide rungs**
 
 ```go
 package doctor
@@ -560,12 +560,12 @@ func anyRunningGuestUnreachable(e Evidence) bool {
 func classifyGuests(e Evidence) []Verdict { return nil }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/doctor/ -run TestClassify -v`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/doctor/classify.go internal/doctor/classify_test.go
@@ -584,7 +584,7 @@ git commit -m "feat(doctor): classify host-wide rungs with stale-log guard"
 - Consumes: `classifyGuests(e Evidence) []Verdict` stub from Task 3.
 - Produces: same signature, now returning per-guest verdicts for `RungGuestNoIP`, `RungGuestSSHStall`, `RungRunnerServiceDown`, `RungHostHardware`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestClassifySingleGuestNoIPSuggestsRecreate(t *testing.T) {
@@ -699,12 +699,12 @@ func TestClassifyLoadCanaryFaultIsHostHardware(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/doctor/ -run TestClassify -v`
 Expected: FAIL — the new tests get zero verdicts (stub returns nil).
 
-- [ ] **Step 3: Replace the `classifyGuests` stub**
+- [x] **Step 3: Replace the `classifyGuests` stub**
 
 Delete the stub line `func classifyGuests(e Evidence) []Verdict { return nil }` and add:
 
@@ -785,12 +785,12 @@ func classifyGuests(e Evidence) []Verdict {
 func classifyRepos(e Evidence) []Verdict { return nil }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/doctor/ -v`
 Expected: PASS (all tests from Tasks 2-4).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/doctor/classify.go internal/doctor/classify_test.go
@@ -809,7 +809,7 @@ git commit -m "feat(doctor): per-guest rungs and two-guest discriminator"
 - Consumes: `classifyRepos(e Evidence) []Verdict` stub from Task 4, `RepoEvidence` from Task 1.
 - Produces: same signature, returning `RungRunnerOffline` and `RungBillingLockout` verdicts, plus `Unknown`-health verdicts when `gh` was unavailable.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestClassifyStaleRunnerRegistration(t *testing.T) {
@@ -860,12 +860,12 @@ func TestClassifyMissingGHIsUnknownNotPass(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/doctor/ -run TestClassify -v`
 Expected: FAIL — new tests get zero verdicts (stub returns nil).
 
-- [ ] **Step 3: Replace the `classifyRepos` stub**
+- [x] **Step 3: Replace the `classifyRepos` stub**
 
 Delete the stub line `func classifyRepos(e Evidence) []Verdict { return nil }` and add:
 
@@ -909,12 +909,12 @@ func classifyRepos(e Evidence) []Verdict {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/doctor/ -v`
 Expected: PASS (all tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/doctor/classify.go internal/doctor/classify_test.go
@@ -938,7 +938,7 @@ git commit -m "feat(doctor): github rungs with unknown-not-pass propagation"
 
 **Note on `--deep`:** this task wires the flag and the load canary. The spare-guest boot is deliberately NOT automated here — `Classify` already returns the host-level verdict whenever two guests lack an IP, so `--deep` only needs to make sure a stopped spare gets probed. Booting it is Step 5.
 
-- [ ] **Step 1: Write the failing CLI test**
+- [x] **Step 1: Write the failing CLI test**
 
 ```go
 package main
@@ -980,12 +980,12 @@ func TestDoctorCanaryDetectsSignalExitCodes(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `go test ./cmd/umbra/ -run TestDoctor -v`
 Expected: FAIL — `undefined: canaryScript`, `undefined: canaryFaulted`.
 
-- [ ] **Step 3: Create the CLI**
+- [x] **Step 3: Create the CLI**
 
 ```go
 package main
@@ -1168,7 +1168,7 @@ func init() {
 }
 ```
 
-- [ ] **Step 4: Register the command and wire the exit code**
+- [x] **Step 4: Register the command and wire the exit code**
 
 In `cmd/umbra/root.go`, append `doctorCmd` to the existing single-line `rootCmd.AddCommand(...)` call (it currently ends `..., pruneCmd, statsCmd)`).
 
@@ -1190,7 +1190,7 @@ func execute() int {
 }
 ```
 
-- [ ] **Step 5: Run tests, build, and verify live**
+- [x] **Step 5: Run tests, build, and verify live**
 
 ```bash
 go test ./... && go vet ./... && make build
@@ -1200,7 +1200,7 @@ go test ./... && go vet ./... && make build
 
 Expected: tests PASS, build succeeds. On the current healthy host, `doctor` prints either `healthy: no faults detected` or genuine findings for the stale `gcc-horse-market` / `Force-Media-CRM` runner registrations. It must **not** report `netstack-dead`, despite `umbrad.err.log` containing pre-restart netstack lines — that is the stale-log guard proving itself against real data.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add cmd/umbra/doctor.go cmd/umbra/doctor_test.go cmd/umbra/root.go
@@ -1220,7 +1220,7 @@ git commit -m "feat(doctor): evidence collection, load canary, and CLI"
 - Consumes: the finished `doctor` command.
 - Produces: no code.
 
-- [ ] **Step 1: Add doctor to the README command table**
+- [x] **Step 1: Add doctor to the README command table**
 
 Add a row matching the existing table's format:
 
@@ -1228,23 +1228,23 @@ Add a row matching the existing table's format:
 | `umbra doctor [--deep] [--json]` | Diagnose host/guest/CI faults and print the next action |
 ```
 
-- [ ] **Step 2: Bump VERSION**
+- [x] **Step 2: Bump VERSION**
 
 Change `VERSION` from `0.7.0` to `0.8.0` (`make app` reads it).
 
-- [ ] **Step 3: Full gate**
+- [x] **Step 3: Full gate**
 
 Run: `go test ./... && go vet ./... && make build`
 Expected: all PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md VERSION docs/superpowers/plans/2026-07-19-umbra-doctor.md
 git commit -m "docs: v0.8.0 umbra doctor command reference"
 ```
 
-- [ ] **Step 5: Blast-radius sweep**
+- [x] **Step 5: Blast-radius sweep**
 
 Grep the repo and sibling configs for every identifier this feature introduces or touches — `doctor`, `canaryScript`, `ScanLog`, `Classify`, `umbrad listening`, `VERSION` — across code, CI workflows, launchd plists, the ops watchdog, and `.env.example`. State the result in the final reply in the required form. Specifically confirm whether the ops watchdog that consumes `umbra status --json` should also consume `umbra doctor --json`; if so, that is a follow-up in the OS repo, not silently skipped.
 

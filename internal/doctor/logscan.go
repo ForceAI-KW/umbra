@@ -16,6 +16,10 @@ var (
 
 // daemonStartMarker is logged once per umbrad start. It is the only reliable
 // in-band signal of when the current daemon lifetime began.
+//
+// This string is a CONTRACT with cmd/umbrad/main.go, which emits it. If the
+// daemon's log message changes and this is not updated in the same commit,
+// ScanLog silently returns nothing and the netstack rung can never fire.
 const daemonStartMarker = "umbrad listening"
 
 // ScanLog parses umbrad.err.log and returns only the lines belonging to the

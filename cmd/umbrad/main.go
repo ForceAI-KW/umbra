@@ -178,6 +178,14 @@ func run(logger *slog.Logger) error {
 	httpSrv := &http.Server{Handler: srv.Handler()}
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.Serve(l) }()
+	// NOTE: this exact message is a load-bearing marker, not just a log line.
+	// internal/doctor.ScanLog finds the LAST occurrence of "umbrad listening"
+	// to determine when the current daemon lifetime began, and discards every
+	// log line before it. The log file outlives daemon restarts and host
+	// reboots, so without that cutoff `umbra doctor` would keep convicting a
+	// healthy host on netstack errors from a fault that was already fixed.
+	// If you change this string, update daemonStartMarker in
+	// internal/doctor/logscan.go in the same commit.
 	logger.Info("umbrad listening", "socket", sock)
 
 	var autostartWG sync.WaitGroup
