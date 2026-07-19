@@ -35,7 +35,7 @@ Remote daemon mode (TCP+auth), LaunchDaemon (system-context vz needs an entitlem
 - Consumes: existing `shellCmd.RunE` closure logic (ssh exec into guest).
 - Produces: `execCmd` cobra command — `umbra exec <name> <command...>`.
 
-- [ ] **Step 1: Extract the shell RunE body into a named function**
+- [x] **Step 1: Extract the shell RunE body into a named function**
 
 In `cmd/umbra/shell.go`, change `shellCmd`'s `RunE:` to `RunE: runShell,` and declare the existing closure body as:
 
@@ -45,7 +45,7 @@ func runShell(cmd *cobra.Command, args []string) error {
 }
 ```
 
-- [ ] **Step 2: Add execCmd**
+- [x] **Step 2: Add execCmd**
 
 Append to `cmd/umbra/shell.go`:
 
@@ -63,16 +63,16 @@ var execCmd = &cobra.Command{
 
 `runShell` already treats `args[1:]` as the remote command (the `--` separator is stripped by cobra before RunE), so no body change is needed.
 
-- [ ] **Step 3: Register it**
+- [x] **Step 3: Register it**
 
 In `cmd/umbra/root.go:26` add `execCmd` after `shellCmd` in the `AddCommand` list.
 
-- [ ] **Step 4: Build + smoke**
+- [x] **Step 4: Build + smoke**
 
 Run: `make build && ./bin/umbra exec --help`
 Expected: usage line `exec <name> <command...>` prints; `go test ./...` passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cmd/umbra/shell.go cmd/umbra/root.go
@@ -95,7 +95,7 @@ git commit -m "feat(cli): umbra exec alias for shell -- command"
 - Consumes: `registry.Machine`, `s.lc.Info(name)` state, `writeErr/writeJSON`.
 - Produces: `type UpdateRequest struct { CPUs *uint "json:\"cpus\""; MemoryMiB *uint64 "json:\"memory_mib\""; DiskGiB *uint64 "json:\"disk_gib\""; Autostart *bool "json:\"autostart\"" }` (pointer fields = "not provided"); client method `UpdateMachine(ctx, name string, req UpdateRequest) (*MachineView, error)`.
 
-- [ ] **Step 1: Write the failing tests** (append to `internal/api/server_test.go`, following the file's existing `httptest` + fake-Lifecycle pattern; reuse its existing test server constructor helper):
+- [x] **Step 1: Write the failing tests** (append to `internal/api/server_test.go`, following the file's existing `httptest` + fake-Lifecycle pattern; reuse its existing test server constructor helper):
 
 ```go
 func TestPatchMachineAutostartWhileRunning(t *testing.T) {
@@ -136,12 +136,12 @@ func TestPatchMachineDiskShrinkRefused(t *testing.T) {
 
 NOTE for implementer: `newTestServer` / `setState` / `doReq` are placeholders for whatever helpers `server_test.go` ALREADY defines (read the file first and reuse its exact helpers — do not invent parallel ones).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/api/ -run TestPatchMachine -v`
 Expected: FAIL (404 from mux — no PATCH route).
 
-- [ ] **Step 3: Implement the handler** (in `Handler()`, after the DELETE handler):
+- [x] **Step 3: Implement the handler** (in `Handler()`, after the DELETE handler):
 
 ```go
 mux.HandleFunc("PATCH /v1/machines/{name}", func(w http.ResponseWriter, r *http.Request) {
@@ -208,11 +208,11 @@ type UpdateRequest struct {
 
 (`paths` and `os` may need importing in server.go — check existing imports.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/api/ -run TestPatchMachine -v` → PASS; then `go test ./...` → PASS.
 
-- [ ] **Step 5: Client method** (in `internal/client/client.go`, after `GetMachine`):
+- [x] **Step 5: Client method** (in `internal/client/client.go`, after `GetMachine`):
 
 ```go
 func (c *Client) UpdateMachine(ctx context.Context, name string, req api.UpdateRequest) (*MachineView, error) {
@@ -224,7 +224,7 @@ func (c *Client) UpdateMachine(ctx context.Context, name string, req api.UpdateR
 
 (Match how this file references request types — if it re-declares local request structs instead of importing `api`, follow that pattern.)
 
-- [ ] **Step 6: CLI command** — Create `cmd/umbra/set.go`:
+- [x] **Step 6: CLI command** — Create `cmd/umbra/set.go`:
 
 ```go
 package main
@@ -290,7 +290,7 @@ func init() {
 
 Register `setCmd` in `root.go`.
 
-- [ ] **Step 7: Build + full test + commit**
+- [x] **Step 7: Build + full test + commit**
 
 ```bash
 go test ./... && make build
@@ -320,7 +320,7 @@ git commit -m "feat: umbra set - mutate cpus/memory/disk/autostart post-create"
 - Client: `TakeSnapshot(ctx, machine, snap string) error`, `ListSnapshots(ctx, machine string) ([]snapshot.Info, error)`, `RestoreSnapshot(ctx, machine, snap string) error`.
 - Paths: `paths.Snapshots(name)` = `filepath.Join(MachineDir(name), "snapshots")`.
 
-- [ ] **Step 1: Failing tests for the snapshot package** — `internal/snapshot/snapshot_test.go`:
+- [x] **Step 1: Failing tests for the snapshot package** — `internal/snapshot/snapshot_test.go`:
 
 ```go
 package snapshot
@@ -383,9 +383,9 @@ func TestRestoreMissingSnapshotFails(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run to verify failure** — `go test ./internal/snapshot/ -v` → FAIL (package missing).
+- [x] **Step 2: Run to verify failure** — `go test ./internal/snapshot/ -v` → FAIL (package missing).
 
-- [ ] **Step 3: Implement `internal/snapshot/snapshot.go`:**
+- [x] **Step 3: Implement `internal/snapshot/snapshot.go`:**
 
 ```go
 // Package snapshot takes and restores point-in-time copies of a machine's
@@ -504,15 +504,15 @@ func Restore(machineDir, snapDir, snapName string) error {
 }
 ```
 
-- [ ] **Step 4: Run** — `go test ./internal/snapshot/ -v` → PASS.
+- [x] **Step 4: Run** — `go test ./internal/snapshot/ -v` → PASS.
 
-- [ ] **Step 5: Paths helper** — add to `internal/paths/paths.go`:
+- [x] **Step 5: Paths helper** — add to `internal/paths/paths.go`:
 
 ```go
 func Snapshots(name string) string { return filepath.Join(MachineDir(name), "snapshots") }
 ```
 
-- [ ] **Step 6: API endpoints** — in `Handler()`:
+- [x] **Step 6: API endpoints** — in `Handler()`:
 
 ```go
 mux.HandleFunc("POST /v1/machines/{name}/snapshots", func(w http.ResponseWriter, r *http.Request) {
@@ -584,7 +584,7 @@ mux.HandleFunc("POST /v1/machines/{name}/restore", func(w http.ResponseWriter, r
 
 Append API tests to `server_test.go` (same helper reuse rule as Task 2): snapshot-while-running → 409; snapshot then list → 1 entry; restore missing → 500. Use the test registry's temp dir with a dummy `disk.img` (write one after `reg.Save` — `paths` honors the test env override, see `paths_test.go`).
 
-- [ ] **Step 7: Client methods**
+- [x] **Step 7: Client methods**
 
 ```go
 func (c *Client) TakeSnapshot(ctx context.Context, machine, snap string) error {
@@ -600,7 +600,7 @@ func (c *Client) RestoreSnapshot(ctx context.Context, machine, snap string) erro
 }
 ```
 
-- [ ] **Step 8: CLI** — Create `cmd/umbra/snapshot.go`:
+- [x] **Step 8: CLI** — Create `cmd/umbra/snapshot.go`:
 
 ```go
 package main
@@ -661,7 +661,7 @@ var restoreCmd = &cobra.Command{
 
 Register all three in `root.go`.
 
-- [ ] **Step 9: Full gate + live verify + commit**
+- [x] **Step 9: Full gate + live verify + commit**
 
 ```bash
 go test ./... && make build
@@ -691,7 +691,7 @@ git commit -m "feat: instant apfs snapshots - snapshot/snapshots/restore"
 - Client: `ImportMachine(ctx, name, stagingDir string) (*MachineView, error)`.
 - CLI: `umbra export <machine> [-o file.tar.gz]` (stopped-only, checked via `GetMachine`), `umbra import <file.tar.gz> [--name newname]` (extracts to a temp dir under `paths.Run()`, then calls the API).
 
-- [ ] **Step 1: Failing tests** — `internal/export/export_test.go`:
+- [x] **Step 1: Failing tests** — `internal/export/export_test.go`:
 
 ```go
 package export
@@ -739,13 +739,13 @@ func TestReadRejectsTraversal(t *testing.T) {
 
 (Include the `buildEvilTar` helper in the test file — `archive/tar` writer with one `../evil` header entry, gzip-wrapped.)
 
-- [ ] **Step 2: Verify fail** — `go test ./internal/export/ -v` → FAIL.
+- [x] **Step 2: Verify fail** — `go test ./internal/export/ -v` → FAIL.
 
-- [ ] **Step 3: Implement** `internal/export/export.go` — `archive/tar` + `compress/gzip`; `Write` streams the two files with flat names; `Read` extracts ONLY `config.json`/`disk.img` entries (reject any other name → covers traversal), parses config with `encoding/json` into `registry.Machine`. ~90 lines; no external deps.
+- [x] **Step 3: Implement** `internal/export/export.go` — `archive/tar` + `compress/gzip`; `Write` streams the two files with flat names; `Read` extracts ONLY `config.json`/`disk.img` entries (reject any other name → covers traversal), parses config with `encoding/json` into `registry.Machine`. ~90 lines; no external deps.
 
-- [ ] **Step 4: PASS** — `go test ./internal/export/ -v`.
+- [x] **Step 4: PASS** — `go test ./internal/export/ -v`.
 
-- [ ] **Step 5: API import endpoint** (in `Handler()`):
+- [x] **Step 5: API import endpoint** (in `Handler()`):
 
 ```go
 mux.HandleFunc("POST /v1/machines/import", func(w http.ResponseWriter, r *http.Request) {
@@ -781,9 +781,9 @@ mux.HandleFunc("POST /v1/machines/import", func(w http.ResponseWriter, r *http.R
 (The final code follows the NOTE — the sketch above locks the request/response contract and validation order; write the clean version.)
 Append server_test: import with taken name → 409; happy path creates dir + fresh MAC ≠ tarball MAC.
 
-- [ ] **Step 6: CLI** — `cmd/umbra/export.go` with both commands: `export` calls `GetMachine` (must be `stopped`, else error), then `export.Write(paths.MachineDir(name), out)` — export is read-only so CLI-side direct file access matches how `shell` reads `paths.SSH()`. `import` extracts to `os.MkdirTemp(paths.Run(), "import-*")` then `apiClient.ImportMachine`. Register both.
+- [x] **Step 6: CLI** — `cmd/umbra/export.go` with both commands: `export` calls `GetMachine` (must be `stopped`, else error), then `export.Write(paths.MachineDir(name), out)` — export is read-only so CLI-side direct file access matches how `shell` reads `paths.SSH()`. `import` extracts to `os.MkdirTemp(paths.Run(), "import-*")` then `apiClient.ImportMachine`. Register both.
 
-- [ ] **Step 7: Gate + commit**
+- [x] **Step 7: Gate + commit**
 
 ```bash
 go test ./... && make build
@@ -803,7 +803,7 @@ git commit -m "feat: export/import machines as tarballs for host migration"
 - Consumes: `ciRunnerRuncmdLines()`, `runcmdSection`, the write_files assembly (read `seed.go` first — mirror how docker's write_files entry is added).
 - Produces: rendered user-data for role `ci-runner` gains (a) a 4 GiB swapfile provisioned idempotently, (b) a systemd `ensure-docker.service` oneshot that (re)installs docker if missing on every boot — closing the "reboot mid-cloud-init leaves docker missing forever" gap.
 
-- [ ] **Step 1: Failing tests** — extend `seed_test.go`:
+- [x] **Step 1: Failing tests** — extend `seed_test.go`:
 
 ```go
 func TestCIRunnerUserDataProvisionsSwap(t *testing.T) {
@@ -825,9 +825,9 @@ func TestCIRunnerUserDataHasEnsureDockerUnit(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: FAIL** — `go test ./internal/cloudinit/ -run TestCIRunner -v`.
+- [x] **Step 2: FAIL** — `go test ./internal/cloudinit/ -run TestCIRunner -v`.
 
-- [ ] **Step 3: Implement.** In the ci-runner write_files block add the unit (following the existing write_files idiom — "write_files runs before runcmd" comment at seed.go:35):
+- [x] **Step 3: Implement.** In the ci-runner write_files block add the unit (following the existing write_files idiom — "write_files runs before runcmd" comment at seed.go:35):
 
 ```yaml
 - path: /etc/systemd/system/ensure-docker.service
@@ -862,9 +862,9 @@ And to `ciRunnerRuncmdLines()` append (idempotent — safe on re-run):
 `systemctl enable ensure-docker.service`,
 ```
 
-- [ ] **Step 4: PASS** — `go test ./internal/cloudinit/ -v` (whole package — the golden/rendering tests must still pass).
+- [x] **Step 4: PASS** — `go test ./internal/cloudinit/ -v` (whole package — the golden/rendering tests must still pass).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/cloudinit/seed.go internal/cloudinit/seed_test.go
@@ -892,7 +892,7 @@ git commit -m "feat(ci-runner): default 4gib swap + reboot-safe docker provision
   `umbra runner harden <machine>` — streams `HardenScript()`.
 - Default `Version`: `2.328.0` (matches `scripts/install-runner.sh`); default runner name `<machine>-<repo-basename>-N`.
 
-- [ ] **Step 1: Failing script-generation tests** — `internal/runner/script_test.go`:
+- [x] **Step 1: Failing script-generation tests** — `internal/runner/script_test.go`:
 
 ```go
 package runner
@@ -939,9 +939,9 @@ func TestHardenScriptCoversAllRunnerUnits(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: FAIL** — `go test ./internal/runner/ -v`.
+- [x] **Step 2: FAIL** — `go test ./internal/runner/ -v`.
 
-- [ ] **Step 3: Implement `internal/runner/script.go`** — template the exact working recipe from `/home/umbra/crm-install.sh` (documented in scripts/install-runner.sh) with the drop-in added after `svc.sh install`:
+- [x] **Step 3: Implement `internal/runner/script.go`** — template the exact working recipe from `/home/umbra/crm-install.sh` (documented in scripts/install-runner.sh) with the drop-in added after `svc.sh install`:
 
 ```bash
 SVC=$(sudo ./svc.sh status | grep -o 'actions\.runner\.[^ ]*\.service' | head -1)
@@ -952,9 +952,9 @@ sudo systemctl daemon-reload
 
 `HardenScript()` loops `systemctl list-units --all 'actions.runner.*' --no-legend | awk '{print $1}'` applying the same drop-in per unit, then `daemon-reload` + restarts any unit in `failed` state.
 
-- [ ] **Step 4: PASS**, then **Step 5: CLI** — `cmd/umbra/runner.go`: token fetch via `exec.Command("gh", "api", "--method", "POST", "repos/"+repo+"/actions/runners/registration-token", "--jq", ".token")` (clear error if `gh` missing: "runner add needs the GitHub CLI (brew install gh) authenticated with repo admin"); ssh streaming reuses the exact ssh arg construction from `runShell` — extract that arg-builder into a shared helper `sshArgs(mv *client.MachineView, remoteCmd []string) []string` in `shell.go` so both call sites share it.
+- [x] **Step 4: PASS**, then **Step 5: CLI** — `cmd/umbra/runner.go`: token fetch via `exec.Command("gh", "api", "--method", "POST", "repos/"+repo+"/actions/runners/registration-token", "--jq", ".token")` (clear error if `gh` missing: "runner add needs the GitHub CLI (brew install gh) authenticated with repo admin"); ssh streaming reuses the exact ssh arg construction from `runShell` — extract that arg-builder into a shared helper `sshArgs(mv *client.MachineView, remoteCmd []string) []string` in `shell.go` so both call sites share it.
 
-- [ ] **Step 6: Live verify + commit** — `./bin/umbra runner harden fwb-ci5` against the real guest; confirm `systemctl show actions.runner.ForceAI-KW-force-website-builder.fwb-ci5-fwb-1.service -p Restart` → `Restart=always`.
+- [x] **Step 6: Live verify + commit** — `./bin/umbra runner harden fwb-ci5` against the real guest; confirm `systemctl show actions.runner.ForceAI-KW-force-website-builder.fwb-ci5-fwb-1.service -p Restart` → `Restart=always`.
 
 ```bash
 git add internal/runner cmd/umbra/runner.go cmd/umbra/shell.go cmd/umbra/root.go
@@ -973,7 +973,7 @@ git commit -m "feat: umbra runner add/list/harden - ci-in-a-box runner managemen
 - Consumes: `apiClient.ListMachines`, the shared `sshArgs` helper from Task 6.
 - Produces: `umbra prune [machine...]` — for each RUNNING machine (all running when no args): runs the guest cleanup script; prints per-guest freed bytes (df / before/after). No daemon change; guests without docker skip that step (`|| true`).
 
-- [ ] **Step 1: Implement** (thin CLI orchestration — the testable logic is the script constant; add `cmd/umbra/prune_test.go` asserting the script contains `apt-get clean`, `docker system prune -af`, `journalctl --vacuum-size`, `fstrim -av`, and does NOT contain `--volumes`):
+- [x] **Step 1: Implement** (thin CLI orchestration — the testable logic is the script constant; add `cmd/umbra/prune_test.go` asserting the script contains `apt-get clean`, `docker system prune -af`, `journalctl --vacuum-size`, `fstrim -av`, and does NOT contain `--volumes`):
 
 Guest script:
 
@@ -990,7 +990,7 @@ echo "PRUNE_FREED $((AFTER - BEFORE))"
 
 CLI parses the `PRUNE_FREED` line and prints `fwb-ci5: freed 3.2 GiB`.
 
-- [ ] **Step 2: Gate + live verify + commit**
+- [x] **Step 2: Gate + live verify + commit**
 
 ```bash
 go test ./... && make build && ./bin/umbra prune fwb-ci5
@@ -1011,9 +1011,9 @@ git commit -m "feat: umbra prune - reclaim guest disk (caches, docker, journal, 
 - Consumes: `apiClient.ListMachines`, `sshArgs` helper, `paths.MachineDir` (host disk.img size via `os.Stat`).
 - Produces: `umbra stats [machine...]` table: NAME · STATE · LOAD · MEM used/total · SWAP used/total · DISK used/total (guest /) · IMG (host file size). Guest probe = one ssh exec of `cat /proc/loadavg; free -b | sed -n '2p;3p'; df -B1 --output=used,size / | tail -1`; parsing lives in a pure function `parseGuestStats(out string) (GuestStats, error)` with a unit test feeding canned output.
 
-- [ ] **Step 1: Failing parse test** — canned 4-line output → assert fields (load "0.42", mem used/total, swap, disk).
-- [ ] **Step 2: FAIL → implement `parseGuestStats` + table printing → PASS.**
-- [ ] **Step 3: Gate + live verify + commit**
+- [x] **Step 1: Failing parse test** — canned 4-line output → assert fields (load "0.42", mem used/total, swap, disk).
+- [x] **Step 2: FAIL → implement `parseGuestStats` + table printing → PASS.**
+- [x] **Step 3: Gate + live verify + commit**
 
 ```bash
 go test ./... && make build && ./bin/umbra stats
