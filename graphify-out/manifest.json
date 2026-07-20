@@ -1,0 +1,474 @@
+{
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/create.go": {
+    "mtime": 1783835849.1462173,
+    "hash": "7d3b1c99bbb85fefbb5ff530147aec20"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/runner.go": {
+    "mtime": 1784143612.7896874,
+    "hash": "77658220dafae7ce44c9b552632c64a0"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/docker.go": {
+    "mtime": 1783833544.43966,
+    "hash": "76d09a5f3f41926c67362f934aef3e94"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/export.go": {
+    "mtime": 1784143612.7887907,
+    "hash": "9c46b0b46b5a1a1cfe4a219af54a757e"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/shell.go": {
+    "mtime": 1784143612.7902725,
+    "hash": "7f1a84c06276f5ff555c42d13a828135"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/machines.go": {
+    "mtime": 1783821488.1109595,
+    "hash": "ff108af49472a029801cdfaf37ac0443"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/forward.go": {
+    "mtime": 1783827608.5328596,
+    "hash": "b7442129134d9d65cfc310d263faaa67"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/prune.go": {
+    "mtime": 1784143612.7889712,
+    "hash": "1254507a4fde7f18f4d7513a09f6104c"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/stats.go": {
+    "mtime": 1784143612.7907662,
+    "hash": "9f524c63120ddea1422b6e8d4caf38b3"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/prune_test.go": {
+    "mtime": 1784143612.7891061,
+    "hash": "7c95e4415ce7f0f171d6060452f1203d"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/rosetta.go": {
+    "mtime": 1783839789.9344141,
+    "hash": "59f72556253947637be1232f9e3bb870"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/daemon.go": {
+    "mtime": 1783835849.1464634,
+    "hash": "664002fef1556360ae5529039da62b4f"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/snapshot.go": {
+    "mtime": 1784143612.790512,
+    "hash": "18baf04ee7a403a4b232a5e0594c5837"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/status.go": {
+    "mtime": 1783835849.1470408,
+    "hash": "c50a7abb7e5b2f835e0cc91090e83fe8"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/set.go": {
+    "mtime": 1784143612.7899177,
+    "hash": "6eba357353b7c93ab7a8f05b0a336985"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/main.go": {
+    "mtime": 1783821488.1111538,
+    "hash": "f12f419f1229555ba5e30e338907469f"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/stats_test.go": {
+    "mtime": 1784143612.7909534,
+    "hash": "6434005b015852ac09c1474befbbe96e"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbra/root.go": {
+    "mtime": 1784143612.7894013,
+    "hash": "b945459abb95de934cef78fd94871af9"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbrad/docker.go": {
+    "mtime": 1783833544.4400916,
+    "hash": "7af89c3b7effaa2393ecc7c86206553f"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/cmd/umbrad/main.go": {
+    "mtime": 1783839789.9346068,
+    "hash": "6114f613834f525f50860396823ed1c5"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/snapshot/snapshot_test.go": {
+    "mtime": 1784143612.794755,
+    "hash": "938dc83728513f25c095b230681348fb"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/snapshot/snapshot.go": {
+    "mtime": 1784143612.7945843,
+    "hash": "a902bf129771f0922837aab9edb793f6"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/ipalloc/ipalloc_test.go": {
+    "mtime": 1783827608.5359228,
+    "hash": "0eb816802cceddf427f2c91f38e2aa36"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/ipalloc/ipalloc.go": {
+    "mtime": 1783827608.5357645,
+    "hash": "7af10294c102381939ca158447252132"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/launchagent/launchagent_test.go": {
+    "mtime": 1783835849.150121,
+    "hash": "e4558791ed81dad62119910ba112fbe9"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/launchagent/launchagent.go": {
+    "mtime": 1783835849.1499488,
+    "hash": "830ee2a6479c050727920a8c4399352d"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/runner/script_test.go": {
+    "mtime": 1784143612.7940903,
+    "hash": "81b8fb930e41fc8fd555b8b946bf8f73"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/runner/validate_test.go": {
+    "mtime": 1784143612.7943456,
+    "hash": "7abaf9785e212c091435ff3171aaff2a"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/runner/validate.go": {
+    "mtime": 1784143612.794238,
+    "hash": "e832cd622f3fb2618655110ddb22da83"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/runner/script.go": {
+    "mtime": 1784143612.7938666,
+    "hash": "7a8729d1eafea2784122d8576b9f933a"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/paths/paths.go": {
+    "mtime": 1783835849.1504488,
+    "hash": "ac783e610321f5d9295b6a0ed221ae28"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/paths/paths_test.go": {
+    "mtime": 1783821488.1169858,
+    "hash": "117c6e44879f191eb5fb0fc0c18d6473"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/dockerbridge/bridge.go": {
+    "mtime": 1783833544.442422,
+    "hash": "d7c2ce204b38559815dd1795f0749fcf"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/dockerbridge/bridge_test.go": {
+    "mtime": 1783833544.4425905,
+    "hash": "c1ccccd7432d97b039443da7a7aedc01"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/dockerbridge/ready_test.go": {
+    "mtime": 1783833544.4432826,
+    "hash": "ff21edcecf312468f5026ea83aa31904"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/dockerbridge/ready.go": {
+    "mtime": 1783833544.4430163,
+    "hash": "d7e273a309800b5c853090174ea0f209"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/image/clone_other.go": {
+    "mtime": 1783821488.11597,
+    "hash": "0c9879598421072bb9f6f92c5dabb79c"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/image/image_test.go": {
+    "mtime": 1783821488.11641,
+    "hash": "58272c6041f33bd16d9f57cfd9553891"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/image/image.go": {
+    "mtime": 1783821488.1162195,
+    "hash": "015b7c1ca75141f60ebf0d23a4c791f6"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/image/clone_darwin.go": {
+    "mtime": 1783821488.1157007,
+    "hash": "ded43e8cc83850942066118952eb8644"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/rosetta_integration_test.go": {
+    "mtime": 1783839789.936928,
+    "hash": "0d79e4823fc2afe4e1efe47017962d78"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/rosetta_darwin.go": {
+    "mtime": 1783839789.9367893,
+    "hash": "9495026cdf4d214c3566a8316df5fa70"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/cirunner_integration_test.go": {
+    "mtime": 1783835849.1512089,
+    "hash": "42f261eca2e5260ffbe9b4cc9bcd19d3"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/rosetta_other.go": {
+    "mtime": 1783839789.9370706,
+    "hash": "3ff3bb5db7aca55121638b02ed1081c1"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/manager_test.go": {
+    "mtime": 1783827608.539136,
+    "hash": "ff240ae55c1d98d6d26856e992451a0c"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/orphan_test.go": {
+    "mtime": 1784138325.9534664,
+    "hash": "90945bebc9ae674538f989b9892fb715"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/integration_helpers_test.go": {
+    "mtime": 1783827608.5383956,
+    "hash": "c4222cc895d68813d517bcaec7ae4e63"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/config_darwin.go": {
+    "mtime": 1783839789.936609,
+    "hash": "daca992be774409f7330d6d0108d1f33"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/stop.go": {
+    "mtime": 1783821488.1207216,
+    "hash": "1d8e6435a2fb2dbc189c00863f22ab86"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/docker_integration_test.go": {
+    "mtime": 1783833544.4445584,
+    "hash": "91512a05be9cafaa2885eed5ba3cea67"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/readiness_test.go": {
+    "mtime": 1783821488.120389,
+    "hash": "f381eff27f6fefaa96a421ae957eee51"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/guard.go": {
+    "mtime": 1783821488.1188185,
+    "hash": "fb07b71a3e295e642b7a8a56a1857dbc"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/guard_test.go": {
+    "mtime": 1783821488.1190157,
+    "hash": "b65ee4d8b453ba9c8579399ab552187a"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/manager.go": {
+    "mtime": 1784138325.9531865,
+    "hash": "f9a5e6fad38e0571fe186a31a3941e74"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/integration_test.go": {
+    "mtime": 1783827608.5386293,
+    "hash": "77e2cea412fffe4dc197c2eb96d565e5"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/orphan.go": {
+    "mtime": 1784138325.953352,
+    "hash": "c47bdadb1f8f4853c34ebdb828fb46e0"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/stop_test.go": {
+    "mtime": 1783821488.120958,
+    "hash": "b87d5827c4e81da2273e61deb098b696"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/vm/readiness.go": {
+    "mtime": 1783827608.5392463,
+    "hash": "b17a93a37af8b3eec001556aedd010a2"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/singleton/singleton_test.go": {
+    "mtime": 1783835849.1510167,
+    "hash": "8cc1424ef116bd932a4606789de215df"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/singleton/singleton.go": {
+    "mtime": 1783835849.1508555,
+    "hash": "e78abe52f7ac3ce2181c5a0b7fac912a"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/registry/registry.go": {
+    "mtime": 1784143612.7936325,
+    "hash": "3a8e541e9e7106a8f5843b5cbdf52899"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/registry/registry_test.go": {
+    "mtime": 1783833544.4443316,
+    "hash": "4082feb9c6dbe22861564383bcf6a9af"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/api/server.go": {
+    "mtime": 1784143612.791595,
+    "hash": "ef0ad8e28146bc21175af122b998ea65"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/api/server_test.go": {
+    "mtime": 1784143612.7919617,
+    "hash": "83d3abbe9bc718c296435b98d9eb6e6b"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/sshkey/sshkey.go": {
+    "mtime": 1783821488.1179569,
+    "hash": "94ec65ca78c659854e2891cf416760b8"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/sshkey/sshkey_test.go": {
+    "mtime": 1783821488.1181865,
+    "hash": "7aba60507f5d56f125ad73867161847e"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/export/export.go": {
+    "mtime": 1784143612.7931929,
+    "hash": "1b4548ca23fe27fa4160262e0d356703"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/export/export_test.go": {
+    "mtime": 1784143612.793334,
+    "hash": "3f7a38b8e0f5a56c741fbba8510dc708"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/dockerctx/dockerctx_test.go": {
+    "mtime": 1783833544.4437232,
+    "hash": "681b431cd2f732dda34d9ed864fdfde2"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/dockerctx/dockerctx.go": {
+    "mtime": 1783833544.4435287,
+    "hash": "896690ad30f275893010214fec737706"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/dns.go": {
+    "mtime": 1783827608.5363944,
+    "hash": "c0bdaeb1aa11f731138beccb2cd304da"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/guard_darwin.go": {
+    "mtime": 1783827608.5367873,
+    "hash": "866feee30abefc5b0dece0e5deaebb7a"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/netstack_test.go": {
+    "mtime": 1783827608.537147,
+    "hash": "652486c6b8feb5a4fc48246d29055f44"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/netstack.go": {
+    "mtime": 1783827608.5369933,
+    "hash": "cff967851786c6fd2a6ff5aa085e1c9c"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/supervisor.go": {
+    "mtime": 1783827608.537341,
+    "hash": "868b72768d841553285fe744cfd819e8"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/dns_test.go": {
+    "mtime": 1783827608.5365849,
+    "hash": "de4bf3cc89271ea2db4703f897e78576"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/attach_darwin.go": {
+    "mtime": 1783827608.5361695,
+    "hash": "469f1d5956f98f953c8ab004603a7172"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/netstack/supervisor_test.go": {
+    "mtime": 1783827608.5374987,
+    "hash": "95fba7d9ca2b7a0e6fa67835dbfee00d"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/client/client.go": {
+    "mtime": 1784143612.7923589,
+    "hash": "4e79e910ad32d71c0b1652670658c5a8"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/client/client_test.go": {
+    "mtime": 1783821488.1147375,
+    "hash": "b9b88aa0d9c8f3c2ffa3fa109d0c8ab2"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/cloudinit/seed_test.go": {
+    "mtime": 1784143612.792976,
+    "hash": "f9bd09abe01466e84dd2b4e6206cad8f"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/internal/cloudinit/seed.go": {
+    "mtime": 1784143612.792624,
+    "hash": "f6ae2cc3cc00129ae968ec0284c86be6"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Package.swift": {
+    "mtime": 1783837195.129444,
+    "hash": "59a22b09ca52ac6d5d41ebf217ac5afd"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Tests/UmbraMenuBarTests/DashboardViewTests.swift": {
+    "mtime": 1783867029.5061126,
+    "hash": "33cfbe54c81d3855dc9ff839c82bdd9e"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Tests/UmbraMenuBarTests/ModelsTests.swift": {
+    "mtime": 1783837195.131479,
+    "hash": "7bf68756351b4e747baafce43091a7c3"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Tests/UmbraMenuBarTests/CLIClientTests.swift": {
+    "mtime": 1783874578.1240077,
+    "hash": "c2e1540713b47bf740a780a4125cb0bb"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/DashboardView.swift": {
+    "mtime": 1783872905.6460578,
+    "hash": "935b0659853eff2e43a4ce0f72114b88"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/StatusModel.swift": {
+    "mtime": 1783872905.6467512,
+    "hash": "fcd64b98a1b8fba8b170fc893d49ab04"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/SettingsView.swift": {
+    "mtime": 1783868142.344925,
+    "hash": "a9852d2da1a366ce4b4e106850ad631d"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/MenuBarView.swift": {
+    "mtime": 1783872905.6463132,
+    "hash": "33ae841048bbf9eca9398dbe49b4a7b2"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/CLIClient.swift": {
+    "mtime": 1783874578.123719,
+    "hash": "635f802c1971134faa2fbaaac6eac738"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/NewMachineSheet.swift": {
+    "mtime": 1783872905.6465042,
+    "hash": "700f78c9d16894400837cf224523a0b7"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/Models.swift": {
+    "mtime": 1783837195.1305237,
+    "hash": "a9a06f81c104f570220626ed3dcdd1c1"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/MachineDetailView.swift": {
+    "mtime": 1783868854.2535663,
+    "hash": "18efe666a2b3b5a96d6d2eef47b508c3"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/Theme.swift": {
+    "mtime": 1783868854.2538822,
+    "hash": "d7b22ad9d7821394654243d7d1c88b22"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/UmbraApp.swift": {
+    "mtime": 1783868142.3453627,
+    "hash": "bf7287d804dc3c8e72c51988a9bac31d"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Sources/UmbraMenuBar/OnboardingView.swift": {
+    "mtime": 1783868142.3446696,
+    "hash": "6c63725f8f95b147473bd26c833172ce"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/README.md": {
+    "mtime": 1784143612.78829,
+    "hash": "371fb1259f16e25e2d4cb3cdcb6fd12a"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/CONTRIBUTING.md": {
+    "mtime": 1783839789.933306,
+    "hash": "4906195fbe9fd219373b0287d5d977d8"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/PITFALLS-EXTERNAL.md": {
+    "mtime": 1783839789.934848,
+    "hash": "e510306c0b0e5996b7cee797be26c8cd"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/research/gvisor-tap-vsock-api.md": {
+    "mtime": 1783821958.6990385,
+    "hash": "13f435968d53b6c0f2b8642ed7dc9e31"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/research/menubar-app.md": {
+    "mtime": 1783835970.2811143,
+    "hash": "b85313d4f50675a2867d163072cfef05"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/research/rosetta-amd64.md": {
+    "mtime": 1783837470.1211557,
+    "hash": "859d67521781238953e5ac759b5f03e6"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/research/full-app-and-dmg.md": {
+    "mtime": 1783863231.861205,
+    "hash": "fa281faed25430f0df4e4cb2f46546e0"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/research/dockerd-in-vm.md": {
+    "mtime": 1783827867.8586683,
+    "hash": "7ed1ed7b8e985bd31ba989665e617169"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/research/launchd-and-ci-cutover.md": {
+    "mtime": 1783833682.922757,
+    "hash": "351bbe5edf0600bbaab1d1b6355dd32d"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/runbooks/ci-cutover.md": {
+    "mtime": 1783835849.1479886,
+    "hash": "b22c9a3b516a34559dc971c15664cd73"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/runbooks/entitlements-and-codesigning.md": {
+    "mtime": 1783821488.112417,
+    "hash": "053e24144060c38339629cdfbe035723"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-12-m6-rosetta-and-release.md": {
+    "mtime": 1783837623.7630959,
+    "hash": "26dc0f5338d6500bb0ebbdb20efdc7b9"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-12-m5-menubar-app.md": {
+    "mtime": 1783836090.455824,
+    "hash": "742ab1ca461fbf5746d025ffe64fe32c"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-12-m7-full-app-and-dmg.md": {
+    "mtime": 1783863375.662073,
+    "hash": "5aca9612a848d8351c53e6b4da309e20"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-12-m4-launchd-and-ci-cutover.md": {
+    "mtime": 1783833840.1898332,
+    "hash": "0c631fbe19d800b005171c63df13d1b6"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-15-umbra-v2-core-upgrades.md": {
+    "mtime": 1784491128.8184867,
+    "hash": "5b98008d9d3524de649293204f65d762"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-12-m3-docker.md": {
+    "mtime": 1783827986.5711496,
+    "hash": "b62a388594dd010483d3bff7a8694158"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-12-m2-networking.md": {
+    "mtime": 1783822289.2419817,
+    "hash": "1f7345e0e4c562a4609fca92492f20b1"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/plans/2026-07-11-m1-core-vm-lifecycle.md": {
+    "mtime": 1783821488.1129043,
+    "hash": "ab5c7664631c56f2d6e85b8c07d74a3d"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/docs/superpowers/specs/2026-07-11-umbra-design.md": {
+    "mtime": 1783867029.5063484,
+    "hash": "609b7e76557d890eca995b66d2e0d9ea"
+  },
+  "/Users/ahmadsharaf/Desktop/projects/umbra/apps/menubar/Resources/icon/umbra-icon.svg": {
+    "mtime": 1783868142.343375,
+    "hash": "fa7dfd4e1bfd787b0009814364452e40"
+  }
+}
