@@ -112,9 +112,14 @@ func TestClassifyHealthyHostReportsNoFailures(t *testing.T) {
 }
 
 func TestClassifySingleGuestNoIPSuggestsRecreate(t *testing.T) {
+	// ConfiguredIPReported is what makes an empty ConfiguredIP mean "damaged
+	// record" rather than "daemon never told us" — see wave 6's
+	// TestClassifyAbsentConfiguredIPFromOldDaemonIsUnknown. Without it this
+	// evidence is ambiguous and correctly declines to convict.
 	e := Evidence{
-		DaemonUp: true,
-		Guests:   []GuestEvidence{{Name: "fwb-ci5", State: "running", IP: ""}},
+		DaemonUp:             true,
+		ConfiguredIPReported: true,
+		Guests:               []GuestEvidence{{Name: "fwb-ci5", State: "running", IP: ""}},
 	}
 	got := Classify(e)
 	if len(got) != 1 || got[0].Rung != RungGuestNoIP {
@@ -424,6 +429,7 @@ func TestClassifyNetstackWithoutGuestMACsIsUnknownNotSilent(t *testing.T) {
 			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:01"},
 			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:02"},
 		},
+		ConfiguredIPReported: true,
 		Guests: []GuestEvidence{
 			// MAC deliberately unset — this is the world before wave 2 lands.
 			{Name: "fwb-ci5", State: "running", IP: "", SSHProbed: false},
@@ -505,6 +511,16 @@ func TestClassifyCanaryOutranksNetstack(t *testing.T) {
 // So: netstack convicts here, and the discriminator rides along as a
 // disclosure. The live-beats-log principle still holds where it was earned —
 // for the load canary, covered by TestClassifyCanaryOutranksNetstack above.
+//
+// WAVE 6 CHANGED THE EVIDENCE, NOT THE POINT. This test used to state its
+// case with two guests holding NO runtime address, which is also exactly what
+// two guests restarted within one daemon lifetime look like — so it was
+// asserting that a routine restart must convict as netstack-dead. That is the
+// false positive wave 6 removed. The precedence question is real and still
+// worth pinning, so it is now stated with SSH-CORROBORATED guests: each passed
+// readiness and then stopped answering ssh, which no restart can produce. The
+// uncorroborated shape is covered by
+// TestClassifyNetstackWithoutSSHCorroborationIsUnknown.
 func TestClassifyNetstackOutranksUncorroboratedTwoGuestSignal(t *testing.T) {
 	now := time.Now()
 	e := Evidence{
@@ -514,9 +530,10 @@ func TestClassifyNetstackOutranksUncorroboratedTwoGuestSignal(t *testing.T) {
 			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:01"},
 			{Time: now, Text: "cannot receive packets", MAC: "aa:bb:cc:dd:ee:02"},
 		},
+		ConfiguredIPReported: true,
 		Guests: []GuestEvidence{
-			{Name: "fwb-ci5", State: "running", MAC: "aa:bb:cc:dd:ee:01", IP: ""},
-			{Name: "fwb-ci2", State: "running", MAC: "aa:bb:cc:dd:ee:02", IP: ""},
+			{Name: "fwb-ci5", State: "running", MAC: "aa:bb:cc:dd:ee:01", ConfiguredIP: "192.168.127.10", IP: "192.168.127.10", SSHProbed: true, SSHOK: false},
+			{Name: "fwb-ci2", State: "running", MAC: "aa:bb:cc:dd:ee:02", ConfiguredIP: "192.168.127.11", IP: "192.168.127.11", SSHProbed: true, SSHOK: false},
 		},
 	}
 	got := Classify(e)

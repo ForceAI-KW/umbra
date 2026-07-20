@@ -165,12 +165,25 @@ type GuestEvidence struct {
 	// intact".
 	//
 	// The pair is what makes a booting guest distinguishable from a broken
-	// one, with no daemon change required:
+	// one:
 	//
-	//	ConfiguredIP == ""              -> broken machine record: convict.
+	//	ConfiguredIP == "" && !ConfiguredIPReported
+	//	                                -> the daemon never reported the field
+	//	                                   for anything; ambiguous between a
+	//	                                   damaged record and an old daemon.
+	//	                                   Unknown — see Evidence.ConfiguredIPReported.
+	//	ConfiguredIP == "" && ConfiguredIPReported
+	//	                                -> broken machine record: convict.
 	//	ConfiguredIP != "" && IP == ""  -> booting, or readiness failed:
 	//	                                   Unknown, re-checkable.
-	//	both set                         -> reachable; carry on down the ladder.
+	//	both set                        -> reachable; carry on down the ladder.
+	//
+	// IT MUST BE READ FROM client.MachineView.ConfiguredIP, NEVER from the
+	// embedded registry.Machine.IP. The embedded field's json tag collides
+	// with MachineView's own shallower `ip`, so encoding/json drops it and it
+	// is always "" on anything decoded from the daemon. Reading it there made
+	// the booting branch above dead code in production for five waves while
+	// its unit tests — which never marshalled — stayed green.
 	//
 	// Conflating the two convicted a routine boot as a damaged guest image
 	// ("umbra rm && umbra create") and, for two guests at once, as failing
@@ -266,10 +279,34 @@ type Evidence struct {
 	// DeepRun records whether --deep was requested. It is what the --json
 	// `deep` field is derived from, so the report describes the run that
 	// actually happened rather than a separately-read flag.
-	DeepRun  bool
-	LogLines []LogLine
-	Guests   []GuestEvidence
-	Repos    []RepoEvidence
+	DeepRun bool
+
+	// ConfiguredIPReported says whether the daemon reported a configured
+	// address for ANY machine on this fleet. It is the capability probe that
+	// makes an EMPTY GuestEvidence.ConfiguredIP interpretable.
+	//
+	// WHY THIS IS NOT REDUNDANT WITH THE PER-GUEST FIELD. A configured address
+	// is written into the registry at create time, so an intact machine always
+	// HAS one — but it only reaches the classifier if the daemon serialises it,
+	// and umbrad builds older than the configured_ip field do not. On such a
+	// host every guest arrives with ConfiguredIP == "" while every registry
+	// record is perfectly intact.
+	//
+	// So "" alone is ambiguous between a damaged record and an old daemon, and
+	// those have opposite remedies (`umbra rm && umbra create` versus
+	// `make install`). Convicting on that ambiguity is exactly the
+	// destroy-a-healthy-guest instruction this rung shipped with.
+	//
+	// The collector sets this true when any machine in the list carried a
+	// configured address: that proves the daemon speaks the field, so a
+	// machine still missing one is genuinely broken and convicts. When it is
+	// false the classifier cannot tell, and says so — Unknown, not Fail.
+	// Establishing it is I/O the COLLECTOR does; Classify only reads it, so
+	// purity is preserved.
+	ConfiguredIPReported bool
+	LogLines             []LogLine
+	Guests               []GuestEvidence
+	Repos                []RepoEvidence
 
 	// Unprobed carries the probes that could not run. See Unprobed's doc.
 	Unprobed []Unprobed

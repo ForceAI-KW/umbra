@@ -2,6 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **STATUS — read before using this as a reference.** This plan is a **point-in-time artifact**: its task breakdown, code snippets and self-review record how the work was planned on 2026-07-19, and are NOT maintained against the shipped implementation. Six review waves changed rung semantics substantially. For current behaviour read, in order: `internal/doctor/classify.go` (the rungs and their reasoning), `internal/doctor/types.go` (the evidence contract), and the design spec `docs/superpowers/specs/2026-07-19-umbra-doctor-design.md`.
+>
+> **Two exceptions are corrected in place rather than left stale**, because they are binding constraints rather than history, and a worker resuming from this plan would act on them: the `--deep` spare-guest boot (Global Constraints, Task 6 note) and the uncorroborated two-guest discriminator (Self-Review). Superseded text is marked where it appears.
+
 **Goal:** Ship `umbra doctor`, a diagnose-only command that classifies an umbra/CI fault into one rung of a documented triage ladder and prints the exact next action.
 
 **Architecture:** A new `internal/doctor` package splits I/O (`Collect`) from interpretation (`Classify`). `Classify` is a pure function — `Evidence` in, `[]Verdict` out — so every rung is unit-testable with a literal struct and no live host. `cmd/umbra/doctor.go` is a thin CLI mirroring the existing `status.go` shape.
@@ -12,7 +16,7 @@ Spec: `docs/superpowers/specs/2026-07-19-umbra-doctor-design.md`
 
 ## Global Constraints
 
-- **Diagnose-only.** Default mode never mutates host or guest state. Only `--deep` may boot the spare guest and run the load canary.
+- **Diagnose-only.** NO mode mutates host or guest state. `--deep` adds the load canary and nothing else — it must **never** boot the spare guest. (Superseded the original wording, which permitted `--deep` to boot the spare; the ops watchdog treats the spare being stopped as a steady-state invariant, so booting it is both a mutation and a false alarm. The design spec was corrected first; this line follows it.)
 - **No new dependencies.** Stdlib + cobra only, matching the rest of the repo.
 - **`unknown` is never `pass`.** A probe that could not run reports `unknown`. Silence must not be reportable as health.
 - **Log evidence alone never convicts rung 1.** It must be paired with a live reachability failure. See Task 2.
@@ -936,7 +940,7 @@ git commit -m "feat(doctor): github rungs with unknown-not-pass propagation"
 - Consumes: `Classify`, `ScanLog`, `Evidence` and friends from Tasks 1-5; `sshArgs(mv *client.MachineView, remoteCmd []string) []string` from `cmd/umbra/shell.go:28`.
 - Produces: `doctorCmd` cobra command with `--json` and `--deep`; `probeGuest`, `probeRepo`, `runCanary` helpers.
 
-**Note on `--deep`:** this task wires the flag and the load canary. The spare-guest boot is deliberately NOT automated here — `Classify` already returns the host-level verdict whenever two guests lack an IP, so `--deep` only needs to make sure a stopped spare gets probed. Booting it is Step 5.
+**Note on `--deep`:** this task wires the flag and the load canary, and that is `--deep`'s entire scope. The spare-guest boot is not "deferred to Step 5" — it was **cut**, because booting a guest is a mutation a diagnose-only tool must not perform. (Superseded: the original text also claimed `Classify` returns the host-level verdict "whenever two guests lack an IP". It no longer does. Two guests without a readiness-confirmed IP is the normal state of any host for ~90s after boot, so that signal now requires the load canary to corroborate it and is otherwise `unknown`.)
 
 - [x] **Step 1: Write the failing CLI test**
 
@@ -1258,4 +1262,7 @@ Grep the repo and sibling configs for every identifier this feature introduces o
 
 **Type consistency:** `Evidence`/`GuestEvidence`/`RepoEvidence`/`RunnerEvidence`/`CanaryResult`/`LogLine`/`Verdict`/`Rung`/`Health` are declared once in T1 and used with identical field names throughout. `Classify` → `classifyNetstack` → `classifyGuests` → `classifyRepos` chain is stubbed forward so each task compiles independently.
 
-**Known gap, deliberate:** `--deep` does not yet auto-boot a stopped spare guest. `Classify` already returns the host-level verdict when two guests lack an IP, so the discriminator works whenever the spare happens to be running. Auto-booting it is a genuine mutation and is left as a follow-up rather than smuggled in — flagged here so it is not silently dropped.
+**Known gap, deliberate — SUPERSEDED, retained to show what changed.** This originally read: "`--deep` does not yet auto-boot a stopped spare guest ... the discriminator works whenever the spare happens to be running", framing the boot as a follow-up. Both halves are now wrong:
+
+- The spare-guest boot was **cut, not deferred**. `--deep` runs the load canary and nothing else; booting the spare is a mutation and the ops watchdog treats the spare being stopped as a steady-state invariant.
+- The **uncorroborated two-guest discriminator was removed.** "Two guests lack an IP" is the normal state of every host for the ~90s readiness window and after any two restarts — it produced an Apple-Diagnostics verdict for a host whose real fault was memory overcommit. The signal now requires load-canary corroboration and is otherwise `unknown`.

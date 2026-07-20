@@ -86,8 +86,8 @@ non-zero otherwise) so the watchdog can consume it.
 | # | Rung | Signature | Next action |
 |---|---|---|---|
 | 0 | Daemon down | Ping fails | `umbra daemon install` |
-| 1 | Netstack death | ≥2 guests that are each *currently running, currently unreachable, and named by a `guest link <MAC> … cannot receive packets` line in this daemon lifetime* | `make build && make install` |
-| 2 | Guest no-IP | state `running` and **no configured address in the registry record** | recreate |
+| 1 | Netstack death | ≥2 guests that are each *currently running, currently unreachable, and named by a `guest link <MAC> … cannot receive packets` line in this daemon lifetime*, **and at least one of them failed ssh while holding a readiness-confirmed address** | `make build && make install` |
+| 2 | Guest no-IP | state `running`, **no configured address reported for it, and a configured address reported for some other machine** (which proves the daemon serialises the field) | recreate |
 | 3 | Guest has IP, ssh won't accept | readiness/ssh timeout | `stop`/`start`, wait for `cloud-init status` = done |
 | 4 | Runner service inactive | systemd unit not `active` **and no other active runner unit for the same repo scope anywhere on the fleet** | restart the unit |
 | 5 | Service active, GitHub reports offline | stale registration | `umbra runner add` + delete the stale registration |
@@ -105,14 +105,30 @@ shipped:
   `mgr.SetIP` only *after* its readiness probe succeeds, up to `vm.DefaultReadyTimeout`
   (90s) after the machine enters `running`, and clears it on stop. `lc.Start` flips the
   state and returns immediately; readiness blocks afterwards.
-- `registry.Machine.IP` (embedded, so already on `MachineView`) — the **static configured
-  address** assigned at create time, present from creation to deletion.
+- `MachineView.ConfiguredIP` — the **static configured address** assigned at create time,
+  present from creation to deletion.
+
+  **It is its own field with its own `configured_ip` json key, and that is load-bearing.**
+  The obvious-looking alternative — read `registry.Machine.IP` off the embedded struct,
+  "already on `MachineView`, no daemon change needed" — *cannot work*, and this design
+  asserted it for five review waves while it was false. The embedded `Machine.IP` is tagged
+  `json:"ip,omitempty"` and collides with `MachineView`'s own shallower `IP`; `encoding/json`
+  resolves a collision at unequal depth in favour of the shallower field and drops the
+  deeper one entirely. The embedded address was therefore never marshalled and never
+  unmarshalled, so the CLI read `""` on every real run — verified against the live daemon,
+  whose `/v1/machines` payload carried no configured address for either machine while the
+  registry on disk held `192.168.127.10` and `192.168.127.13`.
 
 So *every healthy guest is `running` with an empty `MachineView.IP` for its entire boot
-window*, and permanently if readiness times out. Rung 2 therefore convicts **only when the
-configured address is absent** — a damaged registry record, which waiting cannot fix.
-"Configured but not readiness-confirmed" is an **Unknown** with a re-check action, never a
-recreate instruction.
+window*, and permanently if readiness times out. "Configured but not readiness-confirmed"
+is an **Unknown** with a re-check action, never a recreate instruction.
+
+Rung 2 convicts only when the configured address is absent **and the daemon has
+demonstrated it reports the field at all** (some machine on the fleet has one). An absent
+`configured_ip` is otherwise ambiguous between a damaged record and a daemon build older
+than the field, and those have opposite remedies — `umbra rm && umbra create` versus
+`make install`. Convicting on that ambiguity is the same destroy-a-healthy-guest
+instruction one version skew later, so it is an **Unknown** that names the daemon build.
 
 ### Runner units: stale registration vs. outage (rung 4)
 
@@ -202,6 +218,35 @@ Three mitigations, all required:
    doctor cannot perform the correlation and emits an explicit `unknown` verdict on the
    `unknown` rung saying so — it never convicts on log evidence alone, and never stays
    silent, which would render an unpopulated field as health.
+
+4. **SSH corroboration.** The three mitigations above are all satisfied by an entirely
+   routine event: `umbra stop && umbra start` on two guests within one daemon lifetime.
+   The shutdown half emits the INFO line for each, and both guests are then
+   running-and-unreachable for their whole boot window — so a routine restart convicted
+   with "rebuild umbra". It is reachable by following doctor's **own** rung-3 advice twice.
+
+   Disclosing this in the verdict's prose was not sufficient, and the reason is worth
+   stating: `netstack-dead` is in the ops watchdog's `UNHEALABLE_RUNGS`, and the watchdog
+   keys off `rung` and `health` alone. A caveat only a human can read does not stop an
+   automated consumer standing down. **A residual disclosed only in prose is not a control
+   on a machine consumer.**
+
+   So rung 1 now requires that at least one correlated guest failed ssh **while holding a
+   readiness-confirmed address**. A merely-restarting guest has no address at all (umbrad
+   publishes one only after readiness), so no restart can produce that observation, and one
+   such guest rules the restart explanation out for the whole set. Genuine post-boot
+   netstack death leaves exactly this signature, so the rung stays reachable — verified by
+   a dedicated test, because a corroboration requirement that quietly made the rung
+   unreachable would be a regression dressed as a fix.
+
+   **Still open:** netstack death beginning *before* any guest reaches readiness remains
+   indistinguishable from a restart on this evidence, and lands on `unknown` rather than
+   convicting. Closing it needs a per-machine **boot timestamp** so the log line can be
+   required to postdate it. No such timestamp exists to pass in as evidence today
+   (`registry.Machine` has only `CreatedAt`; `vm.Info` exposes no start time), and
+   `Classify` is pure so it cannot read one. The daemon change required: record a start
+   time on the transition to `running`, surface it on `vm.Info` and `MachineView`, put it
+   on `GuestEvidence`, and gate the correlation on it.
 
 Each of these gets a dedicated test.
 

@@ -23,12 +23,26 @@ type Client struct {
 	http *http.Client
 }
 
+// MachineView mirrors api.MachineView; kept as its own type here so the CLI
+// doesn't import internal/api.
+//
+// THE TWO ADDRESS FIELDS ARE NOT REDUNDANT, and the embedded Machine cannot
+// supply either of them. registry.Machine.IP is tagged `json:"ip,omitempty"`
+// and collides with the shallower IP below; encoding/json drops the deeper
+// field, so Machine.IP is ALWAYS "" on a value decoded from the daemon. Read
+// ConfiguredIP, never mv.Machine.IP.
 type MachineView struct {
 	registry.Machine
-	State   vm.State `json:"state"`
-	IP      string   `json:"ip,omitempty"`
-	SSHPort int      `json:"ssh_port,omitempty"`
-	Zombie  bool     `json:"zombie,omitempty"`
+	// IP is the readiness-confirmed runtime address; empty for the whole boot
+	// window and after a readiness timeout.
+	IP string `json:"ip,omitempty"`
+	// ConfiguredIP is the static registry address, present from create to
+	// delete. Only the PAIR distinguishes "still booting" from "broken
+	// machine record" — see doctor.GuestEvidence.
+	ConfiguredIP string   `json:"configured_ip,omitempty"`
+	State        vm.State `json:"state"`
+	SSHPort      int      `json:"ssh_port,omitempty"`
+	Zombie       bool     `json:"zombie,omitempty"`
 }
 
 type CreateRequest struct {

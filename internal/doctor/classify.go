@@ -274,14 +274,66 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 	}
 
 	var correlated []string
+	// corroborated counts the correlated guests whose ssh probe failed DESPITE
+	// a readiness-confirmed address. See the gate below for why that is the
+	// discriminator.
+	var corroborated []string
 	for _, g := range unreachable {
-		if g.MAC != "" && logMACs[normalizeMAC(g.MAC)] {
-			correlated = append(correlated, g.Name)
+		if g.MAC == "" || !logMACs[normalizeMAC(g.MAC)] {
+			continue
+		}
+		correlated = append(correlated, g.Name)
+		if g.IP != "" && g.SSHProbed && !g.SSHOK {
+			corroborated = append(corroborated, g.Name)
 		}
 	}
 	if len(correlated) < 2 {
 		return Verdict{}, false
 	}
+
+	// THE RESTART GATE. Everything above is satisfied by an entirely routine
+	// event: `umbra stop && umbra start` on two guests within one daemon
+	// lifetime. The shutdown half emits the INFO-level "cannot receive
+	// packets" line for each, and both guests are then running-and-unreachable
+	// for their whole boot window. It is reachable by following doctor's OWN
+	// guest-ssh-stall advice twice, and it convicted with "rebuild umbra".
+	//
+	// Disclosing that in the verdict's prose was not enough. netstack-dead is
+	// in the ops watchdog's UNHEALABLE_RUNGS and the watchdog keys off `rung`
+	// and `health` alone, so it stood down on a routine restart and never read
+	// the caveat. A residual only the human sees is not a control.
+	//
+	// The discriminator, available without any daemon change: a guest that is
+	// merely restarting has NO runtime IP, because umbrad publishes one only
+	// after readiness succeeds. A guest that failed ssh WHILE HOLDING a
+	// readiness-confirmed address got all the way up and then stopped
+	// answering — no restart produces that. One such guest is enough to rule
+	// the restart explanation out for the whole correlated set.
+	//
+	// This does NOT make the rung unreachable: real netstack death after boot
+	// leaves exactly this signature, and it is what the rung was written for
+	// (see TestClassifyNetstackStillConvictsWithSSHCorroboration). The case it
+	// gives up on is netstack death that begins BEFORE any guest reaches
+	// readiness, which is genuinely indistinguishable from a restart on this
+	// evidence — that one degrades to Unknown, which is the correct answer to
+	// an ambiguity and, unlike a Fail, does not make the watchdog stand down.
+	if len(corroborated) == 0 {
+		return Verdict{
+			Rung:   RungUnknown,
+			Health: Unknown,
+			Reason: "netstack death cannot be distinguished from a routine restart: the correlated guests are unreachable only because readiness has not published an address yet",
+			Supporting: []string{
+				fmt.Sprintf("correlated guests: %v", correlated),
+				fmt.Sprintf("%d distinct MACs with 'cannot receive packets' since daemon start", len(logMACs)),
+				"'cannot receive packets' is level=INFO and is emitted by the shutdown half of an ordinary stop/start, so a recent restart of these guests reproduces this signature exactly",
+				"no correlated guest failed ssh while holding a readiness-confirmed address, which is the observation a restart cannot produce",
+				fmt.Sprintf("log window scanned: current daemon lifetime, since %s", e.DaemonStart.Format(time.RFC3339)),
+				restartResidual,
+			},
+			NextAction: "if neither guest was restarted recently, re-run doctor after the readiness window (umbra list — expect an IP for each). A netstack fault that survives readiness convicts on the next run; if the addresses appear and ssh works, this was the restart.",
+		}, true
+	}
+
 	return Verdict{
 		Rung:   RungNetstackDead,
 		Health: Fail,
@@ -290,38 +342,50 @@ func classifyNetstack(e Evidence) (Verdict, bool) {
 			fmt.Sprintf("correlated guests: %v", correlated),
 			fmt.Sprintf("%d distinct MACs with 'cannot receive packets' since daemon start", len(logMACs)),
 			"live reachability check failed for each correlated guest",
+			fmt.Sprintf("ssh-corroborated (readiness-confirmed address, ssh dead): %v — a restart cannot produce this, which is what rules the restart explanation out", corroborated),
 			fmt.Sprintf("log window scanned: current daemon lifetime, since %s", e.DaemonStart.Format(time.RFC3339)),
-			restartResidual,
 		},
 		NextAction: "cd ~/Desktop/projects/umbra && make build && make install",
 	}, true
 }
 
-// restartResidual is the KNOWN, UNELIMINATED false positive of the netstack
-// rung, disclosed in the verdict itself rather than buried in a comment the
-// operator will never read.
+// restartResidual describes the netstack rung's false positive. It is now
+// attached to the UNKNOWN branch — the case the rung declines to judge — not
+// to a conviction.
 //
 // "guest link <MAC> closed: cannot receive packets" is emitted by the SHUTDOWN
 // half of an ordinary `umbra stop && umbra start`. The correlation has no time
 // dimension, so two guests restarted within one daemon lifetime and still
-// booting satisfy every condition this rung checks and get told to rebuild
-// umbra. It is reachable through doctor's OWN advice: the guest-ssh-stall next
-// action is `umbra stop X && umbra start X`, so following doctor twice can
-// manufacture it.
+// booting satisfy every MAC-correlation condition this rung checks. It is
+// reachable through doctor's OWN advice: the guest-ssh-stall next action is
+// `umbra stop X && umbra start X`, so following doctor twice manufactures it.
 //
-// WHY IT IS DOCUMENTED RATHER THAN FIXED. Eliminating it needs the guest's
-// CURRENT BOOT time, so the log line can be required to POSTDATE it. No such
-// timestamp exists anywhere to pass in as evidence: registry.Machine carries
-// only CreatedAt (machine creation, not boot), vm.Info exposes
+// WHAT CHANGED IN WAVE 6. Previously this text rode along inside a Fail
+// verdict as a disclosure. That was insufficient in a way the prose could not
+// fix: netstack-dead is in the ops watchdog's UNHEALABLE_RUNGS and the
+// watchdog keys off `rung` and `health` only, so a routine restart made it
+// stand down and no human ever saw the caveat. A residual that only a human
+// can act on is not a control on an automated consumer.
+//
+// The rung now requires SSH CORROBORATION before convicting: at least one
+// correlated guest must have failed ssh while holding a readiness-confirmed
+// address, which a restarting guest cannot do because it has no address yet.
+// Uncorroborated cases become Unknown and carry this string.
+//
+// WHAT IS STILL NOT FIXED. Netstack death that begins before ANY guest reaches
+// readiness is still indistinguishable from a restart here, and lands in the
+// Unknown branch rather than convicting. Closing that needs the guest's
+// CURRENT BOOT time so the log line can be required to POSTDATE it, and no
+// such timestamp exists to pass in as evidence: registry.Machine carries only
+// CreatedAt (machine creation, not boot), vm.Info exposes
 // Name/State/IP/SSHPort/Zombie with no start time, the in-memory vm.instance
-// records none, and client.MachineView adds nothing further. Reading a boot
-// time inside Classify is impossible by construction — Classify is pure — and
-// synthesising one from anything else here would be a fabricated correlation
-// that reads as rigour while being a guess. Disclosing a residual beats faking
-// its absence. Removing it is a daemon change: record a per-machine start time
-// on state transition to running, surface it on vm.Info and MachineView, put it
-// on GuestEvidence, and gate the correlation on it.
-const restartResidual = "RESIDUAL: this rung has no time dimension — two guests restarted within this daemon lifetime and still booting can also produce this signature. Before rebuilding umbra, confirm neither guest was restarted recently."
+// records none, and MachineView adds nothing further. Reading a boot time
+// inside Classify is impossible by construction — Classify is pure — and
+// synthesising one here would be a guess dressed as a correlation. The daemon
+// change that would close it: record a per-machine start time on the
+// transition to running, surface it on vm.Info and MachineView, put it on
+// GuestEvidence, and require the log line to postdate it.
+const restartResidual = "RESIDUAL: this rung has no time dimension — two guests restarted within this daemon lifetime and still booting reproduce this signature. This verdict is Unknown rather than a conviction for exactly that reason; confirm whether either guest was restarted recently."
 
 // normalizeMAC canonicalises a link-layer address for comparison. See the note
 // at the top of classifyNetstack for why this is not cosmetic.
@@ -435,14 +499,40 @@ func classifyGuests(e Evidence) []Verdict {
 			continue
 		case g.IP != "":
 			// Reachable: fall through to the runner units below.
+		case g.ConfiguredIP == "" && !e.ConfiguredIPReported:
+			// AMBIGUOUS, SO IT MUST NOT CONVICT. No machine on this fleet
+			// reported a configured address, which happens for two completely
+			// different reasons: the record really is damaged, or the daemon
+			// is an older build that does not serialise configured_ip at all
+			// and every record is fine. The remedies are opposite —
+			// `umbra rm && umbra create` versus `make install` — and one of
+			// them destroys a healthy CI runner.
+			//
+			// Wave 5 asserted "a configured address is written at create time
+			// and is independent of readiness", which is true of the registry
+			// and irrelevant here: what is missing is the REPORT of it, not
+			// the address. Unknown, named, and pointing at the field.
+			out = append(out, Verdict{
+				Rung: RungUnknown, Health: Unknown, Subject: g.Name,
+				Reason: "machine is running with no readiness-confirmed IP, and no configured address was reported for any machine — this cannot be told apart from a daemon that predates the field",
+				Supporting: []string{
+					"no machine on this fleet reported a configured_ip, so the empty value may be the daemon's silence rather than a damaged record",
+					"a damaged record and an out-of-date daemon need opposite remedies, so this rung will not guess between them",
+				},
+				NextAction: fmt.Sprintf("confirm the daemon reports the field: umbra list --json (expect configured_ip). If it is absent, rebuild and restart the daemon (cd ~/Desktop/projects/umbra && make build && make install) and re-run doctor; if it is present for other machines but not %s, that record is damaged", g.Name),
+			})
+			continue
 		case g.ConfiguredIP == "":
-			// No address in the machine record AT ALL. That is a damaged
-			// registry entry, not a lifecycle state — it cannot resolve by
-			// waiting, so it is the one shape of "no IP" that convicts.
+			// No address in the machine record, ON A DAEMON THAT DEMONSTRABLY
+			// REPORTS THE FIELD for other machines. The silence is this
+			// machine's, not the daemon's, so the record is genuinely damaged:
+			// it cannot resolve by waiting, and this is the one shape of
+			// "no IP" that convicts.
 			out = append(out, Verdict{
 				Rung: RungGuestNoIP, Health: Fail, Subject: g.Name,
 				Reason: "machine reports running but its registry record carries no configured address",
 				Supporting: []string{
+					"the daemon reported a configured address for other machines on this fleet, so this record is damaged rather than unreported",
 					"this is not the boot window: a configured address is written at create time and is independent of readiness",
 				},
 				NextAction: fmt.Sprintf("umbra doctor --deep (confirm host-level first), else: umbra stop %s && umbra rm %s && umbra create %s --role ci-runner --cpus 3 --memory-gib 3 --disk-gib 60 --autostart", g.Name, g.Name, g.Name),

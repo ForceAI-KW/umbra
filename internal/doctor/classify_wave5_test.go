@@ -62,10 +62,29 @@ func TestClassifyBootingGuestIsUnknownNotRecreate(t *testing.T) {
 }
 
 // A guest with NO configured address at all is a genuinely broken machine
-// record. That still convicts.
+// record. That still convicts — BUT ONLY once the daemon has demonstrated it
+// reports the field at all.
+//
+// WHY THIS TEST GAINED A FIELD IN WAVE 6. As written for wave 5 it asserted
+// that ConfiguredIP == "" convicts unconditionally, on the reasoning that a
+// configured address is written at create time so its absence can only mean a
+// damaged record. That reasoning is about the REGISTRY; the classifier sees
+// the daemon's REPORT of the registry, and a daemon older than the
+// configured_ip field reports nothing for every machine on a perfectly healthy
+// fleet. Unconditional conviction therefore meant "upgrade the CLI before the
+// daemon, get told to destroy every guest" — the same destructive false
+// positive wave 5 set out to remove, one version skew later.
+//
+// So the deliberate call: an empty ConfiguredIP convicts only when some
+// machine on the fleet DID report one (ConfiguredIPReported), which proves the
+// silence belongs to this machine rather than to the daemon. The unreported
+// case is Unknown, and differs from the booting case in what it tells the
+// operator to check — the daemon build, not the readiness window. See
+// TestClassifyAbsentConfiguredIPFromOldDaemonIsUnknown.
 func TestClassifyNoConfiguredIPStillConvicts(t *testing.T) {
 	e := Evidence{
-		DaemonUp: true,
+		DaemonUp:             true,
+		ConfiguredIPReported: true,
 		Guests: []GuestEvidence{
 			{Name: "fwb-ci5", State: "running", ConfiguredIP: "", IP: ""},
 		},

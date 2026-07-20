@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -61,18 +62,45 @@ func findUnprobed(us []doctor.Unprobed, what string) *doctor.Unprobed {
 // C1 — the configured address must reach the classifier.
 // ---------------------------------------------------------------------------
 
-// MachineView embeds registry.Machine, so the static create-time address is
-// already available beside the readiness-confirmed one. Without carrying it
-// across, the classifier cannot tell a booting guest from a broken one.
+// bootingGuestPayload is a DAEMON RESPONSE, not a struct literal, and that is
+// the entire point of these two tests.
+//
+// Their previous form built client.MachineView{Machine: registry.Machine{IP:
+// ...}} in memory and asserted the configured address arrived. It always did —
+// in memory. On the wire it never did: the embedded Machine.IP collides with
+// MachineView's shallower `ip` field and encoding/json drops the deeper one,
+// so production saw ConfiguredIP == "" for every guest and convicted every
+// boot window as `guest-no-ip` with a destroy-and-recreate instruction. Five
+// review waves passed these tests while that shipped.
+//
+// Decoding real bytes is what makes them able to fail. The server-side half of
+// the same boundary is covered by TestConfiguredIPSurvivesTheServerToClientWire
+// in internal/api, which marshals from the actual construction site.
+const bootingGuestPayload = `{
+	"name": "fwb-ci5",
+	"mac": "aa:bb:cc:dd:ee:01",
+	"state": "running",
+	"configured_ip": "192.168.127.10",
+	"ssh_port": 2222
+}`
+
+// decodeMachineView parses a daemon payload the way the CLI does.
+func decodeMachineView(t *testing.T, payload string) *client.MachineView {
+	t.Helper()
+	var mv client.MachineView
+	if err := json.Unmarshal([]byte(payload), &mv); err != nil {
+		t.Fatalf("decode machine view: %v", err)
+	}
+	return &mv
+}
+
+// The configured address must reach the classifier THROUGH THE WIRE. Without
+// it the classifier cannot tell a booting guest from a broken one.
 func TestGuestEvidenceCarriesConfiguredIP(t *testing.T) {
 	root := withUmbraRoot(t)
 	writeKey(t, root)
-	mv := &client.MachineView{
-		Machine: registry.Machine{Name: "fwb-ci5", IP: "192.168.127.10"},
-		State:   vm.StateRunning,
-		IP:      "", // still booting: readiness has not confirmed an address
-		SSHPort: 2222,
-	}
+	mv := decodeMachineView(t, bootingGuestPayload)
+
 	g, _ := guestEvidenceFor(mv)
 	if g.ConfiguredIP != "192.168.127.10" {
 		t.Fatalf("ConfiguredIP = %q, want the registry address", g.ConfiguredIP)
@@ -87,10 +115,8 @@ func TestGuestEvidenceCarriesConfiguredIP(t *testing.T) {
 func TestBootingGuestDoesNotProduceARecreateInstruction(t *testing.T) {
 	root := withUmbraRoot(t)
 	writeKey(t, root)
-	mv := &client.MachineView{
-		Machine: registry.Machine{Name: "fwb-ci5", IP: "192.168.127.10"},
-		State:   vm.StateRunning, IP: "", SSHPort: 2222,
-	}
+	mv := decodeMachineView(t, bootingGuestPayload)
+
 	g, _ := guestEvidenceFor(mv)
 	for _, v := range doctor.Classify(doctor.Evidence{DaemonUp: true, Guests: []doctor.GuestEvidence{g}}) {
 		if strings.Contains(v.NextAction, "umbra rm") {

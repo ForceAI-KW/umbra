@@ -162,6 +162,23 @@ func collectEvidence(ctx context.Context) doctor.Evidence {
 				NextAction: "umbra list (if that also fails: umbra daemon status)",
 			})
 		}
+		// THE DAEMON CAPABILITY PROBE. Scanned over EVERY machine — including
+		// stopped ones, whose configured address is just as much proof that
+		// the daemon serialises the field — and computed BEFORE any per-guest
+		// verdict depends on it.
+		//
+		// It answers "does this daemon report configured_ip at all", which is
+		// what makes an empty per-guest ConfiguredIP interpretable. Without
+		// it, a CLI newer than the running daemon sees "" everywhere and
+		// convicts every guest as having a damaged record, with a
+		// destroy-and-recreate instruction. See
+		// doctor.Evidence.ConfiguredIPReported.
+		for i := range machines {
+			if machines[i].ConfiguredIP != "" {
+				ev.ConfiguredIPReported = true
+				break
+			}
+		}
 		for i := range machines {
 			g, unprobed := probeGuest(ctx, &machines[i])
 			ev.Guests = append(ev.Guests, g)
@@ -292,15 +309,21 @@ func printVerdicts(vs []doctor.Verdict) {
 func guestEvidenceFor(mv *client.MachineView) (doctor.GuestEvidence, []doctor.Unprobed) {
 	// BOTH addresses, deliberately. mv.IP is the readiness-confirmed runtime
 	// address, published only after umbrad's readiness probe succeeds (up to
-	// 90s after the state flips to running) and cleared on stop. mv.Machine.IP
-	// is the static address written into the registry at create time — the
-	// embedded registry.Machine is already on MachineView, so no daemon change
-	// is needed to carry it. Only the PAIR distinguishes "still booting" from
-	// "broken machine record"; see doctor.GuestEvidence for what conflating
-	// them cost.
+	// 90s after the state flips to running) and cleared on stop.
+	// mv.ConfiguredIP is the static address written into the registry at
+	// create time. Only the PAIR distinguishes "still booting" from "broken
+	// machine record"; see doctor.GuestEvidence for what conflating them cost.
+	//
+	// NOT mv.Machine.IP. The embedded registry.Machine carries an `IP` tagged
+	// `json:"ip,omitempty"`, which collides with MachineView's own shallower
+	// IP; encoding/json keeps the shallower one and drops the embedded one, so
+	// mv.Machine.IP is ALWAYS "" on a value decoded from the daemon. Reading
+	// it here is what made the booting-guest branch below dead code in
+	// production while its tests passed on in-memory structs that never
+	// crossed the wire. See TestConfiguredIPSurvivesTheServerToClientWire.
 	g := doctor.GuestEvidence{
 		Name: mv.Name, State: mv.State,
-		IP: mv.IP, ConfiguredIP: mv.Machine.IP,
+		IP: mv.IP, ConfiguredIP: mv.ConfiguredIP,
 		MAC: mv.MAC, Zombie: mv.Zombie,
 	}
 
@@ -564,6 +587,25 @@ func collectGitHubWith(ctx context.Context, gh ghExec, ghOK bool, guests []docto
 				What:       "GitHub repos",
 				Detail:     "this guest is unreachable over ssh, so its runner units could not be read and the repos it serves were not probed on the GitHub side",
 				NextAction: fmt.Sprintf("fix this guest first (see its rung above), then re-run doctor — repos served only by %s are undiagnosed until then", g.Name),
+			})
+			continue
+		}
+		// NOT PROBED IS NOT REACHABLE. The guard above catches guests whose
+		// ssh probe FAILED; this one catches guests whose ssh was never
+		// ATTEMPTED — no local key, no ssh binary, no forwarded port all leave
+		// SSHProbed false. Those used to fall through and be counted as
+		// reachable-with-no-units, so the record below offered an operator two
+		// explanations ("none is registered, or the listing failed") for a
+		// guest nothing had ever been run against. Each guest here already has
+		// its own Unprobed record from guestEvidenceFor naming the real
+		// reason, so this adds one scoped to the GitHub half rather than
+		// restating it.
+		if !g.SSHProbed {
+			unprobed = append(unprobed, doctor.Unprobed{
+				Subject:    g.Name,
+				What:       "GitHub repos",
+				Detail:     fmt.Sprintf("no ssh probe was attempted against %s, so its runner units were never listed and the repos it serves were not probed on the GitHub side", g.Name),
+				NextAction: fmt.Sprintf("resolve the ssh probe record for %s above, then re-run doctor", g.Name),
 			})
 			continue
 		}
