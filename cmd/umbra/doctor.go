@@ -517,7 +517,13 @@ func parseRunnerUnits(out string) []doctor.RunnerEvidence {
 		if len(f) < 4 || !strings.HasPrefix(f[0], "actions.runner.") {
 			continue
 		}
-		units = append(units, doctor.RunnerEvidence{Unit: f[0], Active: f[2] == "active"})
+		// f[2] is systemd's ACTIVE column. `activating`/`deactivating` are
+		// distinct from `inactive`/`failed` — see RunnerEvidence.Transitional.
+		units = append(units, doctor.RunnerEvidence{
+			Unit:         f[0],
+			Active:       f[2] == "active",
+			Transitional: f[2] == "activating" || f[2] == "deactivating",
+		})
 	}
 	return units
 }

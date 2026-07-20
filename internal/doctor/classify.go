@@ -560,6 +560,21 @@ func classifyGuests(e Evidence) []Verdict {
 			if r.Active {
 				continue
 			}
+			// A unit mid-transition is not an outage. systemd reports
+			// `activating` while the runner starts, and readiness returns as
+			// soon as sshd answers on :22 — so on every host reboot there is a
+			// real window where the guest is readiness-confirmed and its runner
+			// is still coming up. Convicting there would page an operator for a
+			// normal boot.
+			if r.Transitional {
+				out = append(out, Verdict{
+					Rung: RungUnknown, Health: Unknown, Subject: g.Name,
+					Reason:     fmt.Sprintf("runner unit %s is mid-transition (activating/deactivating), so its health cannot be judged yet", r.Unit),
+					Supporting: []string{"this is the normal state during host reboot or autostart — readiness only waits for sshd, not for the runner service"},
+					NextAction: fmt.Sprintf("re-run doctor in ~30s; if it is still transitional: umbra exec %s systemctl status %s", g.Name, r.Unit),
+				})
+				continue
+			}
 			// AN INACTIVE UNIT IS NOT AUTOMATICALLY AN OUTAGE. Registering a
 			// runner leaves the previous unit behind, enabled but dead, so a
 			// repo routinely carries a stale unit alongside the live one that

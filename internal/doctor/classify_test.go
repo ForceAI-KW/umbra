@@ -667,3 +667,27 @@ func TestClassifyEveryFailingVerdictHasNextAction(t *testing.T) {
 		}
 	}
 }
+
+// A runner still starting during a host reboot must not be reported as an
+// outage. Same class as the netstack and booting-guest bugs: a routine
+// lifecycle event arming a Fail.
+func TestClassifyTransitionalRunnerUnitDoesNotConvict(t *testing.T) {
+	e := Evidence{
+		DaemonUp: true, ConfiguredIPReported: true,
+		Guests: []GuestEvidence{{
+			Name: "fwb-ci5", State: "running", ConfiguredIP: "192.168.127.10",
+			IP: "192.168.127.10", SSHProbed: true, SSHOK: true,
+			Runners: []RunnerEvidence{
+				{Unit: "actions.runner.ForceAI-KW-fwb.fwb-ci5-1.service", Transitional: true},
+			},
+		}},
+	}
+	for _, v := range Classify(e) {
+		if v.Rung == RungRunnerServiceDown {
+			t.Fatalf("convicted runner-service-down on a mid-transition unit: %+v", v)
+		}
+		if v.Health == Fail {
+			t.Fatalf("a starting runner produced a Fail: %+v", v)
+		}
+	}
+}

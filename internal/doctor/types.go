@@ -135,6 +135,14 @@ type CanaryResult struct {
 type RunnerEvidence struct {
 	Unit   string
 	Active bool
+	// Transitional is true when systemd reports the unit as `activating` or
+	// `deactivating`. It is NOT the same as inactive: a unit mid-start is the
+	// normal state during host reboot / autostart, because readiness only
+	// requires sshd on :22 and returns while the runner service is still
+	// coming up. Collapsing that into Active=false convicted a healthy booting
+	// fleet with runner-service-down — the same "a routine lifecycle event
+	// arms a Fail" shape as the netstack and booting-guest bugs.
+	Transitional bool
 }
 
 // GuestEvidence is everything observed about one machine.

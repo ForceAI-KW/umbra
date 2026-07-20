@@ -495,3 +495,33 @@ func TestCollectGitHubDistinguishesReachableHostWithNoRunners(t *testing.T) {
 		t.Errorf("detail %q blames unreachability on a guest whose ssh was fine", unprobed[0].Detail)
 	}
 }
+
+// systemd's ACTIVE column has more than two values. `activating` is the normal
+// state during host reboot/autostart — readiness returns as soon as sshd answers
+// on :22, while the runner service is still coming up — so collapsing it into
+// "not active" convicted a healthy booting fleet.
+func TestParseRunnerUnitsDistinguishesTransitionalFromInactive(t *testing.T) {
+	const out = `actions.runner.org-repo.g-1.service    loaded active     running   Runner A
+actions.runner.org-repo.g-2.service    loaded activating start     Runner B
+actions.runner.org-repo.g-3.service    loaded inactive   dead      Runner C
+actions.runner.org-repo.g-4.service    loaded deactivating stop    Runner D
+`
+	got := parseRunnerUnits(out)
+	if len(got) != 4 {
+		t.Fatalf("parsed %d units, want 4: %+v", len(got), got)
+	}
+	for _, c := range []struct {
+		i                 int
+		active, transient bool
+	}{
+		{0, true, false},  // active
+		{1, false, true},  // activating  → transitional, must NOT convict
+		{2, false, false}, // inactive    → genuinely down
+		{3, false, true},  // deactivating → transitional
+	} {
+		if got[c.i].Active != c.active || got[c.i].Transitional != c.transient {
+			t.Errorf("unit %d (%s): Active=%v Transitional=%v, want %v/%v",
+				c.i, got[c.i].Unit, got[c.i].Active, got[c.i].Transitional, c.active, c.transient)
+		}
+	}
+}
