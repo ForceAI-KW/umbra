@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -289,8 +290,18 @@ func printVerdicts(vs []doctor.Verdict) {
 // A stopped machine is NOT unprobed: the ladder skips it by design, so
 // reporting it would be noise, not honesty.
 func guestEvidenceFor(mv *client.MachineView) (doctor.GuestEvidence, []doctor.Unprobed) {
+	// BOTH addresses, deliberately. mv.IP is the readiness-confirmed runtime
+	// address, published only after umbrad's readiness probe succeeds (up to
+	// 90s after the state flips to running) and cleared on stop. mv.Machine.IP
+	// is the static address written into the registry at create time — the
+	// embedded registry.Machine is already on MachineView, so no daemon change
+	// is needed to carry it. Only the PAIR distinguishes "still booting" from
+	// "broken machine record"; see doctor.GuestEvidence for what conflating
+	// them cost.
 	g := doctor.GuestEvidence{
-		Name: mv.Name, State: mv.State, IP: mv.IP, MAC: mv.MAC, Zombie: mv.Zombie,
+		Name: mv.Name, State: mv.State,
+		IP: mv.IP, ConfiguredIP: mv.Machine.IP,
+		MAC: mv.MAC, Zombie: mv.Zombie,
 	}
 
 	if mv.State != vm.StateRunning {
@@ -315,7 +326,50 @@ func guestEvidenceFor(mv *client.MachineView) (doctor.GuestEvidence, []doctor.Un
 			NextAction: "install an ssh client (xcode-select --install)",
 		}}
 	}
+	// THE LOCAL KEY. doctor probes with BatchMode=yes, which never prompts —
+	// so a missing or unreadable ~/.umbra/ssh/id_ed25519 makes ssh fail
+	// SILENTLY, and every running guest on the fleet then looked like it had
+	// wedged: guest-ssh-stall FAIL, with "stop and start the guest" as the
+	// remedy for a problem entirely on the operator's own machine. Check the
+	// key before probing so the report names the real subject.
+	if _, err := os.Stat(sshKeyPath()); err != nil {
+		return g, []doctor.Unprobed{{
+			Subject:    mv.Name,
+			What:       "ssh",
+			Detail:     fmt.Sprintf("the local ssh key %s cannot be read: %v — this is a fault on THIS machine, not in the guest", sshKeyPath(), err),
+			NextAction: fmt.Sprintf("restore the key (it is created with the machine; check %s), then re-run doctor — do not restart the guest for this", paths.SSH()),
+		}}
+	}
 	return g, nil
+}
+
+// sshKeyPath is the identity doctor probes with. Kept in one place so the
+// existence check here and the -i flag in sshArgs cannot drift apart.
+func sshKeyPath() string { return filepath.Join(paths.SSH(), "id_ed25519") }
+
+// sshAuthFailure reports whether ssh's output shows the connection was
+// REFUSED CREDENTIALS rather than the guest being unreachable.
+//
+// The distinction decides who owns the fault. "Permission denied (publickey)"
+// or an unreadable identity file is a local credential problem — the guest may
+// be perfectly healthy, and restarting it fixes nothing while costing a CI
+// job. A timeout or a refused connection, by contrast, really is the guest or
+// the netstack, which is what guest-ssh-stall is for.
+func sshAuthFailure(out string) bool {
+	for _, sig := range []string{
+		"Permission denied",
+		"not accessible",
+		"Host key verification failed",
+		"Too many authentication failures",
+		"no such identity",
+		"Load key",
+		"UNPROTECTED PRIVATE KEY FILE",
+	} {
+		if strings.Contains(out, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // probeGuest gathers per-guest evidence over ssh. Every probe failure degrades
@@ -332,8 +386,22 @@ func probeGuest(ctx context.Context, mv *client.MachineView) (doctor.GuestEviden
 	}
 
 	g.SSHProbed = true
-	if err := runBounded(ctx, sshProbeTimeout, sshPath, sshProbeArgs(mv, []string{"true"})); err == nil {
+	out, err := runBoundedOutput(ctx, sshProbeTimeout, sshPath, sshProbeArgs(mv, []string{"true"}))
+	switch {
+	case err == nil:
 		g.SSHOK = true
+	case sshAuthFailure(out):
+		// ssh reached a decision and REFUSED OUR CREDENTIALS. That says
+		// nothing about the guest's health, so it must not be reported as
+		// one — leaving SSHProbed set here would convict the guest of
+		// ssh-stall and advise a restart for a local key problem.
+		g.SSHProbed = false
+		return g, append(unprobed, doctor.Unprobed{
+			Subject:    mv.Name,
+			What:       "ssh",
+			Detail:     fmt.Sprintf("ssh could not authenticate to the guest (local credential problem, not a guest fault): %s", strings.TrimSpace(firstLine(out))),
+			NextAction: fmt.Sprintf("check the local key: ls -l %s, and that its public half is in the guest's authorized_keys — do NOT restart %s for this", sshKeyPath(), mv.Name),
+		})
 	}
 	if !g.SSHOK {
 		return g, unprobed
@@ -349,6 +417,11 @@ func probeGuest(ctx context.Context, mv *client.MachineView) (doctor.GuestEviden
 			Subject: mv.Name,
 			What:    "systemd runner units",
 			Detail:  fmt.Sprintf("ssh succeeded but listing units failed: %v", err),
+			// Every other Unprobed record carries a next action; this one did
+			// not, so the operator was told what failed and nothing about what
+			// to do. It also gates the whole GitHub half of the ladder, since
+			// the repos to probe are derived from these unit names.
+			NextAction: fmt.Sprintf("run it by hand to see the error: umbra exec %s systemctl list-units 'actions.runner.*' --all --no-legend --plain — the GitHub-side rungs stay unevaluated until this works", mv.Name),
 		})
 	}
 
@@ -373,10 +446,27 @@ func probeGuest(ctx context.Context, mv *client.MachineView) (doctor.GuestEviden
 	return g, unprobed
 }
 
-func runBounded(ctx context.Context, d time.Duration, path string, argv []string) error {
+// runBoundedOutput runs a bounded command and returns its combined output
+// alongside the error. The OUTPUT is what makes an ssh failure classifiable:
+// the exit status alone is 255 for every failure mode ssh has, so discarding
+// the message (which is what this replaced) made "wrong key" and "guest
+// wedged" indistinguishable.
+func runBoundedOutput(ctx context.Context, d time.Duration, path string, argv []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
-	return exec.CommandContext(ctx, path, argv[1:]...).Run()
+	out, err := exec.CommandContext(ctx, path, argv[1:]...).CombinedOutput()
+	return string(out), err
+}
+
+// firstLine keeps a multi-line ssh diagnostic to one readable line in a
+// verdict; ssh emits banners and warnings around the message that matters.
+func firstLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // runnerUnitsCommand is the remote systemctl invocation.
@@ -446,13 +536,39 @@ func realGH(ctx context.Context, args ...string) ([]byte, error) {
 // "I could not look" and "I looked and found nothing" must not be the same
 // output; that is the same defect the Unprobed machinery exists to prevent.
 func collectGitHub(ctx context.Context, guests []doctor.GuestEvidence) ([]doctor.RepoEvidence, bool, []doctor.Unprobed) {
-	gh := ghAvailable()
+	return collectGitHubWith(ctx, realGH, ghAvailable(), guests)
+}
 
+// collectGitHubWith is collectGitHub with the gh runner injected, so the
+// derivation logic is testable without a network or a GitHub token.
+func collectGitHubWith(ctx context.Context, gh ghExec, ghOK bool, guests []doctor.GuestEvidence) ([]doctor.RepoEvidence, bool, []doctor.Unprobed) {
 	var units []string
-	unreachable := 0
+	var unprobed []doctor.Unprobed
+	reachableWithNoUnits := 0
+
 	for _, g := range guests {
-		if g.State == vm.StateRunning && g.SSHProbed && !g.SSHOK {
-			unreachable++
+		if g.State != vm.StateRunning {
+			continue
+		}
+		// PER-GUEST, not fleet-wide. The fleet-wide check below only fired
+		// when NO guest yielded any unit, so a fleet with one unreachable and
+		// one healthy guest silently dropped the unreachable guest's repos:
+		// the GitHub half of the ladder reported on half the fleet and said
+		// nothing about the other half. That is the same "I could not look"
+		// rendered as "I looked and found nothing" defect the Unprobed
+		// machinery exists to prevent — fixed for the total case in an earlier
+		// wave, but not for the partial one.
+		if g.SSHProbed && !g.SSHOK {
+			unprobed = append(unprobed, doctor.Unprobed{
+				Subject:    g.Name,
+				What:       "GitHub repos",
+				Detail:     "this guest is unreachable over ssh, so its runner units could not be read and the repos it serves were not probed on the GitHub side",
+				NextAction: fmt.Sprintf("fix this guest first (see its rung above), then re-run doctor — repos served only by %s are undiagnosed until then", g.Name),
+			})
+			continue
+		}
+		if len(g.Runners) == 0 {
+			reachableWithNoUnits++
 		}
 		for _, r := range g.Runners {
 			units = append(units, r.Unit)
@@ -460,19 +576,30 @@ func collectGitHub(ctx context.Context, guests []doctor.GuestEvidence) ([]doctor
 	}
 
 	if len(units) == 0 {
-		detail := "no actions.runner units were discovered, so no repo could be derived"
-		next := "if this host serves CI, check: umbra exec <machine> systemctl list-units 'actions.runner.*' --all"
-		if unreachable > 0 {
-			detail = fmt.Sprintf("%d running guest(s) unreachable over ssh, so no runner units could be read and no repo could be derived", unreachable)
-			next = "fix the guest first (see the guest rung above), then re-run doctor — GitHub-side rungs cannot be evaluated until runner units are readable"
+		// Only describe the case that actually happened. Telling an operator
+		// to run systemctl is wrong when the unit listing failed on a guest
+		// that was perfectly REACHABLE — the fault is in the listing, not in
+		// whether units exist.
+		if reachableWithNoUnits == 0 && len(unprobed) > 0 {
+			// Every running guest was unreachable, and each already has its
+			// own record naming it. A fleet-wide record here would repeat
+			// them without adding a fact.
+			return nil, ghOK, unprobed
 		}
-		return nil, gh, []doctor.Unprobed{{
+		detail := "no actions.runner units were discovered on any guest, so no repo could be derived"
+		next := "if this host serves CI, check: umbra exec <machine> systemctl list-units 'actions.runner.*' --all"
+		if reachableWithNoUnits > 0 {
+			detail = fmt.Sprintf("%d reachable guest(s) returned no actions.runner units, so no repo could be derived — either none is registered, or the unit listing itself failed", reachableWithNoUnits)
+			next = "check whether the listing works at all: umbra exec <machine> systemctl list-units 'actions.runner.*' --all --no-legend --plain (an empty result means no runner is registered; an error means the listing failed)"
+		}
+		return nil, ghOK, append(unprobed, doctor.Unprobed{
 			What:       "GitHub repos",
 			Detail:     detail,
 			NextAction: next,
-		}}
+		})
 	}
-	return collectRepos(ctx, realGH, units), gh, nil
+	repos, repoUnprobed := collectRepos(ctx, gh, units)
+	return repos, ghOK, append(unprobed, repoUnprobed...)
 }
 
 func ghAvailable() bool {
@@ -484,7 +611,7 @@ func ghAvailable() bool {
 // could not complete is returned with Probed:false — never with a fabricated
 // healthy reading, because the classifier renders unprobed as Unknown and a
 // false Pass here would hide a real billing lockout.
-func collectRepos(ctx context.Context, gh ghExec, units []string) []doctor.RepoEvidence {
+func collectRepos(ctx context.Context, gh ghExec, units []string) ([]doctor.RepoEvidence, []doctor.Unprobed) {
 	seen := map[string]bool{}
 	var scopes []string
 	for _, u := range units {
@@ -498,41 +625,100 @@ func collectRepos(ctx context.Context, gh ghExec, units []string) []doctor.RepoE
 	sort.Strings(scopes) // ordered findings; unit order is not stable
 
 	out := make([]doctor.RepoEvidence, 0, len(scopes))
+	var unprobed []doctor.Unprobed
 	for _, s := range scopes {
-		repo, err := resolveRepo(ctx, gh, s)
+		t, err := resolveScope(ctx, gh, s)
 		if err != nil {
 			out = append(out, doctor.RepoEvidence{Repo: s, Probed: false})
 			continue
 		}
-		ev, err := probeRepo(ctx, gh, repo)
+		ev, err := probeScope(ctx, gh, t)
 		if err != nil {
-			out = append(out, doctor.RepoEvidence{Repo: repo, Probed: false})
+			out = append(out, doctor.RepoEvidence{Repo: t.name, Probed: false})
 			continue
+		}
+		if t.isOrg {
+			// The runner half was genuinely probed, but the billing-lockout
+			// rung is derived from a REPO's workflow runs and there is no
+			// org-wide equivalent. Recording the org as fully probed would
+			// assert "no billing lockout" from a probe that never ran.
+			unprobed = append(unprobed, doctor.Unprobed{
+				Subject:    t.name,
+				What:       "billing lockout",
+				Detail:     fmt.Sprintf("%q is an org-level runner registration; the lockout signature is read from a repo's workflow runs, and there is no org-wide equivalent, so that rung was not evaluated", t.name),
+				NextAction: fmt.Sprintf("check billing directly if jobs are failing in ~3s: gh api orgs/%s/settings/billing/actions", t.name),
+			})
 		}
 		out = append(out, ev)
 	}
-	return out
+	return out, unprobed
+}
+
+// scopeTarget is a resolved runner scope: either a repo ("owner/repo") or an
+// org login. The two need different API endpoints, which is why a scope that
+// is really an org used to be permanently unprobeable — repoCandidates
+// requires a '-' split and every lookup went to repos/<owner>/<repo>.
+type scopeTarget struct {
+	name  string
+	isOrg bool
+}
+
+// resolveScope asks GitHub what a runner scope actually IS. A repo-scoped
+// runner unit carries an escaped "<owner>-<repo>"; an org-scoped one carries a
+// bare org login. Neither is decidable by string surgery — '-' is legal inside
+// both owner and repo names, and an org login may contain one too
+// ("ForceAI-KW" splits into a perfectly plausible "ForceAI/KW") — so GitHub is
+// the oracle for both questions.
+//
+// Repo candidates are tried first: a scope that resolves as a repo IS a repo,
+// and the repo path additionally supports the billing rung.
+func resolveScope(ctx context.Context, gh ghExec, scope string) (scopeTarget, error) {
+	if repo, err := resolveRepo(ctx, gh, scope); err == nil {
+		return scopeTarget{name: repo}, nil
+	}
+	out, err := gh(ctx, "api", "orgs/"+scope, "--jq", ".login")
+	if err != nil {
+		return scopeTarget{}, fmt.Errorf("scope %q resolved as neither a repo nor an org: %w", scope, err)
+	}
+	if login := strings.TrimSpace(string(out)); login != "" {
+		return scopeTarget{name: login, isOrg: true}, nil
+	}
+	return scopeTarget{}, fmt.Errorf("scope %q resolved as neither a repo nor an org", scope)
+}
+
+// probeScope gathers the GitHub-side evidence for a resolved scope. The runner
+// listing has the same payload shape at both endpoints; only billing differs.
+func probeScope(ctx context.Context, gh ghExec, t scopeTarget) (doctor.RepoEvidence, error) {
+	if t.isOrg {
+		ev := doctor.RepoEvidence{Repo: t.name}
+		out, err := gh(ctx, "api", "orgs/"+t.name+"/actions/runners")
+		if err != nil {
+			return ev, err
+		}
+		online, err := parseRunnerStatus(out)
+		if err != nil {
+			return ev, err
+		}
+		ev.RunnerOnline = online
+		ev.Probed = true
+		return ev, nil
+	}
+	return probeRepo(ctx, gh, t.name)
 }
 
 // repoScopeFromUnit extracts the scope from
 // actions.runner.<scope>.<instance>.service, where <scope> is the escaped
-// "<owner>-<repo>" (or a bare org for an org-level runner).
+// "<owner>-<repo>" (or a bare org for an org-level runner — see resolveScope,
+// which resolves both shapes).
+//
+// The parse itself lives in internal/doctor because the CLASSIFIER needs it
+// too, to group runner units by repo when deciding whether an inactive unit is
+// a stale registration or a real outage. Two copies would drift.
 //
 // A repo name containing a literal '.' is escaped by systemd and is not
 // handled here; such a unit yields an unresolvable scope, which surfaces as
 // Probed:false rather than as a wrong repo.
-func repoScopeFromUnit(unit string) string {
-	s := strings.TrimSuffix(unit, ".service")
-	s = strings.TrimPrefix(s, "actions.runner.")
-	if s == unit || s == "" {
-		return ""
-	}
-	parts := strings.Split(s, ".")
-	if len(parts) < 2 {
-		return ""
-	}
-	return parts[0]
-}
+func repoScopeFromUnit(unit string) string { return doctor.RunnerUnitScope(unit) }
 
 // repoCandidates lists every way "<owner>-<repo>" could split. The separator
 // is '-', which is also legal INSIDE both an owner and a repo name

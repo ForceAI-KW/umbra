@@ -125,20 +125,24 @@ func TestClassifySingleGuestNoIPSuggestsRecreate(t *testing.T) {
 	}
 }
 
-// THE TWO-GUEST DISCRIMINATOR. Two independent guests failing identically is
-// host-level, not two coincidentally damaged images — and it rules out a
-// ~20-minute recreate in about 2 minutes.
+// THE TWO-GUEST DISCRIMINATOR, as corrected in wave 5. Two independent guests
+// with no address is host-level rather than two coincidentally damaged images
+// — but it is NOT by itself evidence that the HARDWARE is failing, so it only
+// reaches a host-hardware conviction alongside a load-canary fault. See
+// classifyHostHardware, and TestClassifyTwoBootingGuestsIsNotHostHardware for
+// the uncorroborated case this test used to assert.
 func TestClassifyTwoGuestsNoIPIsHostLevel(t *testing.T) {
 	e := Evidence{
 		DaemonUp: true,
 		Guests: []GuestEvidence{
-			{Name: "fwb-ci5", State: "running", IP: ""},
-			{Name: "fwb-ci2", State: "running", IP: "", Spare: true},
+			{Name: "fwb-ci5", State: "running", IP: "",
+				LoadCanary: CanaryResult{Ran: true, Faulted: true, Detail: "curl exited 132 (SIGILL)"}},
+			{Name: "fwb-ci2", State: "running", IP: ""},
 		},
 	}
 	got := Classify(e)
 	if len(got) != 1 {
-		t.Fatalf("len(verdicts) = %d, want 1 host-level verdict", len(got))
+		t.Fatalf("len(verdicts) = %d, want 1 host-level verdict: %+v", len(got), got)
 	}
 	if got[0].Rung != RungHostHardware {
 		t.Errorf("Rung = %v, want RungHostHardware", got[0].Rung)
@@ -330,8 +334,11 @@ func TestClassifyRoutineMultiMACLogDoesNotConvictBootingGuest(t *testing.T) {
 			{Time: now.Add(-40 * time.Minute), Text: "guest link closed", MAC: "aa:bb:cc:dd:ee:02"},
 		},
 		Guests: []GuestEvidence{
-			// A third, different guest, currently booting: no IP yet.
-			{Name: "fwb-ci5", State: "running", MAC: "aa:bb:cc:dd:ee:09", IP: ""},
+			// A third, different guest, currently booting: it has its
+			// configured address from create time but readiness has not
+			// confirmed a runtime IP yet.
+			{Name: "fwb-ci5", State: "running", MAC: "aa:bb:cc:dd:ee:09",
+				ConfiguredIP: "192.168.127.10", IP: ""},
 		},
 	}
 	got := Classify(e)
@@ -340,8 +347,19 @@ func TestClassifyRoutineMultiMACLogDoesNotConvictBootingGuest(t *testing.T) {
 			t.Fatalf("convicted netstack-dead from routine shutdown log lines: %+v", v)
 		}
 	}
-	if len(got) != 1 || got[0].Rung != RungGuestNoIP {
-		t.Fatalf("verdicts = %+v, want a single RungGuestNoIP (the booting guest)", got)
+	// WAVE 5 CORRECTION. This assertion used to demand RungGuestNoIP for this
+	// guest — i.e. it asserted the bug. A booting guest is not a broken guest,
+	// and RungGuestNoIP's next action is `umbra stop && umbra rm && umbra
+	// create`: the test was pinning "destroy and recreate a healthy machine"
+	// as correct behaviour.
+	if len(got) != 1 {
+		t.Fatalf("verdicts = %+v, want a single verdict for the booting guest", got)
+	}
+	if got[0].Rung == RungGuestNoIP {
+		t.Fatalf("convicted guest-no-ip on a guest that is merely booting: %+v", got[0])
+	}
+	if got[0].Health != Unknown {
+		t.Fatalf("health = %q, want unknown for a booting guest: %+v", got[0].Health, got[0])
 	}
 }
 
@@ -473,9 +491,21 @@ func TestClassifyCanaryOutranksNetstack(t *testing.T) {
 	}
 }
 
-// The two-guest discriminator is a live, present-tense host-level observation;
-// the netstack rung is derived from a log. The live observation wins.
-func TestClassifyTwoGuestDiscriminatorOutranksNetstack(t *testing.T) {
+// WAVE 5 CORRECTION — this test asserted the OPPOSITE, and the precedence it
+// pinned was wrong.
+//
+// It used to require that the two-guest discriminator outrank the netstack
+// rung, on the reasoning that a live observation beats a log-derived one. But
+// "two guests have no IP" is not an observation of failing hardware at all
+// (see classifyHostHardware), whereas two guests correlated to netstack error
+// lines IS specific evidence about umbra's network stack. Under the old
+// precedence this evidence produced "power-cycle and run Apple Diagnostics"
+// for a fault whose actual remedy is `make build && make install`.
+//
+// So: netstack convicts here, and the discriminator rides along as a
+// disclosure. The live-beats-log principle still holds where it was earned —
+// for the load canary, covered by TestClassifyCanaryOutranksNetstack above.
+func TestClassifyNetstackOutranksUncorroboratedTwoGuestSignal(t *testing.T) {
 	now := time.Now()
 	e := Evidence{
 		DaemonUp:    true,
@@ -490,8 +520,19 @@ func TestClassifyTwoGuestDiscriminatorOutranksNetstack(t *testing.T) {
 		},
 	}
 	got := Classify(e)
-	if len(got) != 1 || got[0].Rung != RungHostHardware {
-		t.Fatalf("verdicts = %+v, want a single RungHostHardware", got)
+	if len(got) == 0 || got[0].Rung != RungNetstackDead {
+		t.Fatalf("verdicts = %+v, want RungNetstackDead first", got)
+	}
+	if got[0].Health != Fail {
+		t.Fatalf("netstack health = %q, want fail", got[0].Health)
+	}
+	for _, v := range got {
+		if v.Rung == RungHostHardware {
+			t.Fatalf("convicted host-hardware without a canary fault: %+v", v)
+		}
+		if strings.Contains(v.NextAction, "Apple Diagnostics") {
+			t.Fatalf("advised Apple Diagnostics for a netstack fault: %+v", v)
+		}
 	}
 }
 

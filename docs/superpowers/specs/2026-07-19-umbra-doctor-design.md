@@ -87,32 +87,47 @@ non-zero otherwise) so the watchdog can consume it.
 |---|---|---|---|
 | 0 | Daemon down | Ping fails | `umbra daemon install` |
 | 1 | Netstack death | ≥2 guests that are each *currently running, currently unreachable, and named by a `guest link <MAC> … cannot receive packets` line in this daemon lifetime* | `make build && make install` |
-| 2 | Guest no-IP | state `running`, IP empty | recreate — unless the discriminator says host-level |
+| 2 | Guest no-IP | state `running` and **no configured address in the registry record** | recreate |
 | 3 | Guest has IP, ssh won't accept | readiness/ssh timeout | `stop`/`start`, wait for `cloud-init status` = done |
-| 4 | Runner service inactive | systemd unit not `active` | restart the unit |
+| 4 | Runner service inactive | systemd unit not `active` **and no other active runner unit for the same repo scope anywhere on the fleet** | restart the unit |
 | 5 | Service active, GitHub reports offline | stale registration | `umbra runner add` + delete the stale registration |
 | 6 | Billing lockout | jobs fail in ~3s with `runner_name:""` and `steps:[]` | **Ahmad** — org Billing & plans |
 | 7 | Idle-healthy but faults under load | `--deep` canary hits SIGILL/SIGSEGV | **power-cycle + Apple Diagnostics** |
 
 Rung 4 is in-guest (systemd, over ssh). Rungs 5–6 are per-repo and depend on `gh`.
 
+### Two addresses, and why rung 2 depends on which one is missing
+
+`MachineView` carries **two** addresses, and conflating them was the worst bug this design
+shipped:
+
+- `MachineView.IP` — the **readiness-confirmed runtime address**. `umbrad` publishes it via
+  `mgr.SetIP` only *after* its readiness probe succeeds, up to `vm.DefaultReadyTimeout`
+  (90s) after the machine enters `running`, and clears it on stop. `lc.Start` flips the
+  state and returns immediately; readiness blocks afterwards.
+- `registry.Machine.IP` (embedded, so already on `MachineView`) — the **static configured
+  address** assigned at create time, present from creation to deletion.
+
+So *every healthy guest is `running` with an empty `MachineView.IP` for its entire boot
+window*, and permanently if readiness times out. Rung 2 therefore convicts **only when the
+configured address is absent** — a damaged registry record, which waiting cannot fix.
+"Configured but not readiness-confirmed" is an **Unknown** with a re-check action, never a
+recreate instruction.
+
+### Runner units: stale registration vs. outage (rung 4)
+
+Registering a runner leaves the previous systemd unit behind, enabled but dead, so a repo
+routinely carries a stale unit beside the live one serving its CI. Rung 4 groups units by
+repo scope **across the whole fleet**: an inactive unit is a `fail` only when *no* runner
+for that scope is active anywhere. Otherwise it is an Unknown with a
+`systemctl disable --now` action. Without this, `umbra doctor` exited 1 on every run of a
+verifiably healthy host.
+
 ### `--deep`
 
 `--deep` opts into the one probe that costs real time. It does **not** start, stop, or
-otherwise mutate any machine — see the discriminator note below.
+otherwise mutate any machine.
 
-- **Two-guest discriminator** (rung 2): if two guests that are *already running* both fail
-  to obtain an IP, the fault is host-level, not guest-image — which rules out a ~20-minute
-  recreate in about 2 minutes.
-
-  **Doctor does NOT boot the spare guest.** An earlier draft of this design had `--deep`
-  start the stopped spare, probe it, and stop it again. That was deliberately not built,
-  for two reasons: it would make `--deep` mutate machine state, and the ops watchdog
-  (`ci-runner-guard.sh`) treats the spare being stopped as a steady-state invariant —
-  doctor starting it would trip the very alarm doctor exists to explain. The discriminator
-  therefore works only with guests that happen to be running already, and reports nothing
-  when there is just one. `GuestEvidence.Spare` records *which* machine is the spare; it is
-  not a signal that doctor started anything.
 - **Native-binary load canary** (rung 7): a bounded ~60s stress **per running guest**,
   run sequentially — so a two-guest host costs ~2 minutes, not ~60s. It is deliberately
   not parallelised: running the canary on every guest at once would put the host under a
@@ -123,6 +138,40 @@ otherwise mutate any machine — see the discriminator note below.
   the run. Stock arm64 binaries taking
   CPU-level signals means the guest is miscomputing, which is a host-level fault that no
   amount of RAM/CPU tuning will fix.
+
+**Doctor does NOT boot the spare guest.** An earlier draft had `--deep` start the stopped
+spare, probe it, and stop it again. That was deliberately not built: it would make `--deep`
+mutate machine state, and the ops watchdog (`ci-runner-guard.sh`) treats the spare being
+stopped as a steady-state invariant, so doctor starting it would trip the very alarm doctor
+exists to explain. (A `GuestEvidence.Spare` field survived that cut but was never populated
+by any collector, so it claimed "not the spare" for every guest on the fleet. It has been
+removed.)
+
+### The two-guest discriminator (rung 7, default run — **requires corroboration**)
+
+The discriminator runs on the **default read-only run**, not under `--deep`, and it is a
+rung-7 host-hardware question — not the rung-2 refinement an earlier draft of this document
+described.
+
+It does **not** convict on its own. The original rule was "two running guests with an empty
+IP ⇒ the host's hardware is bad ⇒ power-cycle and run Apple Diagnostics", and every term in
+that inference was wrong. Per the two-addresses section above, two guests are in that state
+throughout any ordinary boot — which is the steady state of a host reboot with two autostart
+guests, and is reachable through doctor's own `umbra stop X && umbra start X` advice.
+
+That verdict is the most expensive wrong answer this tool can give: it sends the operator to
+Apple, and `host-hardware` is in the watchdog's `UNHEALABLE_RUNGS`, so the watchdog stands
+down during a routine boot. **It was produced against a real host**: a human operator
+concluded "host-level hardware fault, book Apple service" and had to retract it — the real
+cause was memory overcommit.
+
+So a host-hardware conviction now requires a **load-canary fault**. Correlated netstack log
+lines were considered as an alternative corroborator and rejected: they point at umbra's
+user-mode network stack, whose remedy is `make build && make install`, not at the CPU, and
+since tier 2 runs before tier 3 using them here would answer a netstack fault with a
+power-cycle. Uncorroborated, the two-guest fact becomes an explicit **Unknown** that
+discloses what doctor cannot distinguish — including host memory overcommit, for which the
+ladder has no rung at all.
 
 ## The stale-log trap
 

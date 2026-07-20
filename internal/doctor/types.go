@@ -141,7 +141,43 @@ type RunnerEvidence struct {
 type GuestEvidence struct {
 	Name  string
 	State vm.State // the upstream enum, not a second copy of it
-	IP    string
+
+	// IP is the READINESS-CONFIRMED runtime address, mirroring
+	// client.MachineView.IP. READ THE NEXT PARAGRAPH BEFORE TREATING IT AS
+	// "has an address".
+	//
+	// umbrad sets this via mgr.SetIP only AFTER its readiness probe succeeds,
+	// which can take up to vm.DefaultReadyTimeout (90s) after the machine
+	// enters StateRunning, and it clears it again on stop. lc.Start flips the
+	// state to running and returns immediately; readiness blocks afterwards.
+	// So EVERY healthy guest is running-with-an-empty-IP for its entire boot
+	// window, and permanently if readiness times out.
+	//
+	// Empty therefore means "not readiness-confirmed", NOT "no address". The
+	// question "does this machine even have an address" is answered by
+	// ConfiguredIP.
+	IP string
+
+	// ConfiguredIP is the STATIC address assigned at create time and recorded
+	// in the machine registry (registry.Machine.IP, e.g. "192.168.127.10").
+	// It is present from creation until deletion and is untouched by the
+	// lifecycle, so it is the only field that answers "is this machine record
+	// intact".
+	//
+	// The pair is what makes a booting guest distinguishable from a broken
+	// one, with no daemon change required:
+	//
+	//	ConfiguredIP == ""              -> broken machine record: convict.
+	//	ConfiguredIP != "" && IP == ""  -> booting, or readiness failed:
+	//	                                   Unknown, re-checkable.
+	//	both set                         -> reachable; carry on down the ladder.
+	//
+	// Conflating the two convicted a routine boot as a damaged guest image
+	// ("umbra rm && umbra create") and, for two guests at once, as failing
+	// host HARDWARE ("power-cycle then run Apple Diagnostics"). That verdict
+	// was produced against a real host; the actual cause was memory
+	// overcommit, and the ops watchdog stands down on host-hardware.
+	ConfiguredIP string
 
 	// Zombie mirrors client.MachineView.Zombie: the machine is crashed AND
 	// umbrad still holds a live VM handle for it, because a stop was requested
@@ -169,12 +205,13 @@ type GuestEvidence struct {
 	SSHProbed bool
 	SSHOK     bool
 
-	// Spare marks a guest kept stopped as a standby. NOTE: --deep does NOT
-	// boot it. Booting was in the original design and was deliberately not
-	// implemented — --deep stays close to read-only, and the ops watchdog
-	// relies on the spare remaining stopped. The field records which machine
-	// is the spare; it is not a signal that doctor started anything.
-	Spare bool
+	// NOTE: there is deliberately no Spare field. The original design had
+	// --deep boot the stopped standby guest as a discriminator; that was never
+	// implemented, because it would make --deep mutate machine state and the
+	// ops watchdog treats the spare being stopped as a steady-state invariant.
+	// A Spare bool survived the cut but was never populated by any collector,
+	// so it read as "this guest is not the spare" for every guest on the
+	// fleet — a field whose zero value is a false claim. Removed in wave 5.
 
 	Runners    []RunnerEvidence
 	LoadCanary CanaryResult

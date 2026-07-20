@@ -233,7 +233,7 @@ func TestCollectReposPopulatesEvidenceFromUnitNames(t *testing.T) {
 		"repos/ForceAI/KW-umbra": fmt.Errorf("gh: 404"),
 	}}
 
-	got := collectRepos(context.Background(), f.run, []string{
+	got, _ := collectRepos(context.Background(), f.run, []string{
 		"actions.runner.ForceAI-KW-umbra.fwb-ci5-umbra-1.service",
 		"actions.runner.ForceAI-KW-umbra.fwb-ci5-umbra-2.service", // same repo, probe once
 	})
@@ -256,7 +256,7 @@ func TestCollectReposPopulatesEvidenceFromUnitNames(t *testing.T) {
 // must produce Probed:false, which the classifier renders as Unknown.
 func TestCollectReposUnprobedWhenGHFails(t *testing.T) {
 	f := &fakeGH{errs: map[string]error{"repos/": fmt.Errorf("gh: HTTP 403 rate limit exceeded")}}
-	got := collectRepos(context.Background(), f.run, []string{"actions.runner.acme-site.r-1.service"})
+	got, _ := collectRepos(context.Background(), f.run, []string{"actions.runner.acme-site.r-1.service"})
 	if len(got) != 1 {
 		t.Fatalf("want 1 repo entry even when gh fails, got %d", len(got))
 	}

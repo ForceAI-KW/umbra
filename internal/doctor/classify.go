@@ -42,17 +42,21 @@ func Classify(e Evidence) []Verdict {
 		}}, unknowns...)
 	}
 
-	if v, ok := classifyHostHardware(e); ok {
-		return append([]Verdict{v}, unknowns...)
+	host, terminal := classifyHostHardware(e)
+	if terminal {
+		return append(host, unknowns...)
 	}
 
 	v, ok := classifyNetstack(e)
 	if ok && v.Health == Fail {
-		return append([]Verdict{v}, unknowns...)
+		return append(append([]Verdict{v}, host...), unknowns...)
 	}
 	// An Unknown netstack verdict means the probe could not be evaluated. That
 	// degrades this one rung; it must not swallow the rest of the diagnosis.
+	// The same is true of a non-terminal host-hardware verdict: the
+	// discriminator could not conclude, which is a disclosure, not a diagnosis.
 	out := unknowns
+	out = append(out, host...)
 	if ok {
 		out = append(out, v)
 	}
@@ -80,50 +84,108 @@ func classifyUnprobed(e Evidence) []Verdict {
 	return out
 }
 
-// classifyHostHardware covers the two host-level signals that are observed
-// live rather than inferred from a log: two independent guests failing
-// identically, and stock arm64 binaries taking CPU-level signals under load.
+// classifyHostHardware covers the host-level signals observed live rather than
+// inferred from a log. It returns (verdicts, terminal): terminal=true means a
+// real host-hardware conviction that ends the ladder, terminal=false means the
+// verdicts are disclosures the rest of the diagnosis must still run alongside.
 //
-// Both produce the same rung and the same remedy, so when both are present
-// they are merged into ONE verdict carrying BOTH evidence strings. Returning
-// early on the first would drop the canary detail — the single most decisive
-// line in the whole report — from the output a human actually reads.
-func classifyHostHardware(e Evidence) (Verdict, bool) {
-	var noIP []string
-	var canary []string
+// THE ONLY CONVICTING SIGNAL IS THE LOAD CANARY. Stock arm64 binaries taking
+// SIGILL/SIGSEGV is a direct, present-tense observation of the machine
+// miscomputing. Nothing else here is.
+//
+// WHY THE TWO-GUEST DISCRIMINATOR NO LONGER CONVICTS ON ITS OWN. It used to
+// read "two running guests with an empty IP => the host's hardware is bad =>
+// power-cycle and run Apple Diagnostics". Every term in that inference was
+// wrong. GuestEvidence.IP is the readiness-CONFIRMED address (see its doc), so
+// two guests are in that state for the whole of any ordinary boot — which is
+// the steady state of a host reboot with two autostart guests, and is also
+// reachable through doctor's own `umbra stop X && umbra start X` advice. The
+// verdict it produced is the most expensive wrong answer this tool can give:
+// it sends the operator to Apple, and host-hardware is in the ops watchdog's
+// UNHEALABLE_RUNGS, so the watchdog stands down during a routine boot.
+//
+// This is not hypothetical. That exact signature was produced on a real host,
+// a human operator concluded "host-level hardware fault, book Apple service",
+// and the conclusion had to be retracted — the real cause was memory
+// overcommit, which no rung here even looks at.
+//
+// So the discriminator now needs CORROBORATION, and the corroborating signal
+// is the load canary. Correlated netstack log lines were considered and
+// rejected: they point at umbra's user-mode network stack, whose remedy is
+// "rebuild umbra", not at the CPU — using them to convict host-hardware would
+// preempt the netstack rung (tier 2 runs before tier 3) and answer a netstack
+// fault with a power-cycle. Uncorroborated, the two-guest fact becomes an
+// explicit Unknown that names what doctor cannot yet distinguish, including
+// the overcommit cause the ladder has no rung for.
+//
+// When the canary DOES fault, the two-guest fact still rides along as
+// supporting evidence in the same verdict — dropping the canary detail, the
+// single most decisive line in the report, was the reason these were merged.
+func classifyHostHardware(e Evidence) ([]Verdict, bool) {
+	var noAddr, unconfirmed, canary []string
 	for _, g := range e.Guests {
+		// Only a guest with NO readiness-confirmed IP is a candidate here. A
+		// confirmed IP proves the guest has an address whatever the registry
+		// record says, so ConfiguredIP is consulted only to explain WHY the
+		// confirmed one is missing.
 		if g.State == vm.StateRunning && g.IP == "" {
-			noIP = append(noIP, g.Name)
+			if g.ConfiguredIP == "" {
+				noAddr = append(noAddr, g.Name)
+			} else {
+				unconfirmed = append(unconfirmed, g.Name)
+			}
 		}
 		if g.LoadCanary.Ran && g.LoadCanary.Faulted {
 			canary = append(canary, fmt.Sprintf("%s: %s", g.Name, g.LoadCanary.Detail))
 		}
 	}
 
-	// Two independent guests failing to obtain an IP is host-level, not two
-	// coincidentally damaged images — and it rules out a ~20-minute recreate.
-	twoGuest := len(noIP) >= 2
-	if !twoGuest && len(canary) == 0 {
-		return Verdict{}, false
+	// Guests that never reached a readiness-confirmed address. Both shapes
+	// count: a missing machine record and a failed readiness are both "this
+	// guest is not serving", which is what the discriminator is about.
+	stalled := append(append([]string{}, noAddr...), unconfirmed...)
+	sort.Strings(stalled)
+
+	if len(canary) == 0 {
+		if len(stalled) < 2 {
+			return nil, false
+		}
+		return []Verdict{{
+			Rung:   RungUnknown,
+			Health: Unknown,
+			Reason: fmt.Sprintf("%d running guests have not reached a readiness-confirmed address — doctor cannot tell a host-level cause from an ordinary boot without the load canary", len(stalled)),
+			Supporting: []string{
+				fmt.Sprintf("guests not readiness-confirmed: %v", stalled),
+				"this is the NORMAL steady state for the ~90s readiness window after any host reboot with two autostart guests, and after any two restarts",
+				twoGuestResidual,
+			},
+			NextAction: "wait out the readiness window and re-run: umbra list (expect an IP per guest). If they stay empty, run umbra doctor --deep for the load canary, and check host memory overcommit (umbra list vs. physical RAM) BEFORE suspecting hardware",
+		}}, false
 	}
 
-	var reasons, evidence []string
-	if len(canary) > 0 {
-		reasons = append(reasons, "native binaries crashed with CPU-level signals under load")
-		evidence = append(evidence, canary...)
+	reasons := []string{"native binaries crashed with CPU-level signals under load"}
+	evidence := append([]string{}, canary...)
+	if len(stalled) >= 2 {
+		reasons = append(reasons, "and two independent guests never reached a readiness-confirmed address")
+		evidence = append(evidence, fmt.Sprintf("guests not readiness-confirmed: %v", stalled))
 	}
-	if twoGuest {
-		reasons = append(reasons, "two independent guests failed to obtain an IP — host-level, not guest-image")
-		evidence = append(evidence, fmt.Sprintf("guests with no IP: %v", noIP))
-	}
-	return Verdict{
+	return []Verdict{{
 		Rung:       RungHostHardware,
 		Health:     Fail,
-		Reason:     strings.Join(reasons, "; "),
+		Reason:     strings.Join(reasons, " "),
 		Supporting: evidence,
 		NextAction: "full power-cycle (shut down, wait, power on) then run Apple Diagnostics — config changes cannot fix miscomputing hardware, and do NOT recreate guests on this boot",
-	}, true
+	}}, true
 }
+
+// twoGuestResidual is what the two-guest discriminator still cannot rule out
+// even once the readiness window has passed, disclosed in the verdict rather
+// than buried here. Doctor has no rung for host resource exhaustion: memory
+// overcommit starves guests of the RAM they need to finish booting and
+// reproduces this signature exactly, and it was the true cause the one time
+// this signature was seen in production. Adding a real rung for it needs host
+// memory pressure as evidence, which the collector does not gather today.
+const twoGuestResidual = "RESIDUAL: doctor has no rung for host resource exhaustion. Memory overcommit (guests' combined memory-gib exceeding physical RAM) starves guests during boot and produces this exact signature — it was the real cause the one time this was seen in production, and was initially misdiagnosed as failing hardware."
 
 // classifyNetstack detects host-wide netstack death by CORRELATION.
 //
@@ -350,6 +412,7 @@ func classifyMachineState(g GuestEvidence) (Verdict, bool) {
 // note there.
 func classifyGuests(e Evidence) []Verdict {
 	var out []Verdict
+	served := reposWithAnActiveRunner(e)
 
 	for _, g := range e.Guests {
 		if v, ok := classifyMachineState(g); ok {
@@ -359,34 +422,131 @@ func classifyGuests(e Evidence) []Verdict {
 		if g.State != vm.StateRunning {
 			continue // stopped; see classifyMachineState for why that is silent
 		}
+		// The two no-address branches are reached only when there is NO
+		// readiness-confirmed IP; a confirmed IP settles the question on its
+		// own and the ladder carries on to ssh and the runner units.
 		switch {
-		case g.IP == "":
-			out = append(out, Verdict{
-				Rung: RungGuestNoIP, Health: Fail, Subject: g.Name,
-				Reason:     "machine reports running but has no IP",
-				NextAction: fmt.Sprintf("umbra doctor --deep (confirm host-level first), else: umbra stop %s && umbra rm %s && umbra create %s --role ci-runner --cpus 3 --memory-gib 3 --disk-gib 60 --autostart", g.Name, g.Name, g.Name),
-			})
-			continue
-		case g.SSHProbed && !g.SSHOK:
+		case g.IP != "" && g.SSHProbed && !g.SSHOK:
 			out = append(out, Verdict{
 				Rung: RungGuestSSHStall, Health: Fail, Subject: g.Name,
 				Reason:     "guest has an IP but ssh is not accepting connections",
 				NextAction: fmt.Sprintf("umbra stop %s && umbra start %s, then wait for: umbra exec %s cloud-init status", g.Name, g.Name, g.Name),
 			})
 			continue
+		case g.IP != "":
+			// Reachable: fall through to the runner units below.
+		case g.ConfiguredIP == "":
+			// No address in the machine record AT ALL. That is a damaged
+			// registry entry, not a lifecycle state — it cannot resolve by
+			// waiting, so it is the one shape of "no IP" that convicts.
+			out = append(out, Verdict{
+				Rung: RungGuestNoIP, Health: Fail, Subject: g.Name,
+				Reason: "machine reports running but its registry record carries no configured address",
+				Supporting: []string{
+					"this is not the boot window: a configured address is written at create time and is independent of readiness",
+				},
+				NextAction: fmt.Sprintf("umbra doctor --deep (confirm host-level first), else: umbra stop %s && umbra rm %s && umbra create %s --role ci-runner --cpus 3 --memory-gib 3 --disk-gib 60 --autostart", g.Name, g.Name, g.Name),
+			})
+			continue
+		case g.IP == "":
+			// Configured but not readiness-confirmed. umbrad sets the runtime
+			// IP only after its readiness probe succeeds, up to 90s after the
+			// state flips to running — so this is what EVERY healthy guest
+			// looks like while it boots. Convicting it (and, for two guests,
+			// escalating to failing hardware) told operators to destroy
+			// healthy machines. Unknown, named, re-checkable.
+			out = append(out, Verdict{
+				Rung: RungUnknown, Health: Unknown, Subject: g.Name,
+				Reason: "machine is running with a configured address but no readiness-confirmed IP — it is still booting, or its readiness probe timed out",
+				Supporting: []string{
+					fmt.Sprintf("configured address: %s (present, so the machine record is intact)", g.ConfiguredIP),
+					"umbrad publishes the runtime IP only after readiness succeeds, up to 90s after the machine enters running",
+				},
+				NextAction: fmt.Sprintf("re-run doctor after the readiness window: umbra list (expect an IP for %s). If it never appears, check the guest console and host memory pressure before recreating anything", g.Name),
+			})
+			continue
 		}
 		for _, r := range g.Runners {
-			if !r.Active {
-				out = append(out, Verdict{
-					Rung: RungRunnerServiceDown, Health: Fail, Subject: g.Name,
-					Reason:     fmt.Sprintf("runner unit %s is not active", r.Unit),
-					NextAction: fmt.Sprintf("umbra exec %s sudo systemctl restart %s", g.Name, r.Unit),
-				})
+			if r.Active {
+				continue
 			}
+			// AN INACTIVE UNIT IS NOT AUTOMATICALLY AN OUTAGE. Registering a
+			// runner leaves the previous unit behind, enabled but dead, so a
+			// repo routinely carries a stale unit alongside the live one that
+			// is serving its CI right now. Verified on this host:
+			// actions.runner.<org>-<repo>.<guest>-1 sat `loaded inactive dead`
+			// while <guest>-<repo>-1 was `active running` and executing jobs —
+			// and `umbra doctor` therefore exited 1 on every run of a HEALTHY
+			// fleet. A tool that cries wolf on a healthy host trains its
+			// operator, and its watchdog, to stop reading it.
+			//
+			// The discriminator is per-REPO, not per-unit and not per-guest:
+			// the repo's CI is served as long as SOME runner for that scope is
+			// active anywhere on the fleet.
+			if scope := RunnerUnitScope(r.Unit); scope != "" && served[scope] {
+				out = append(out, Verdict{
+					Rung: RungUnknown, Health: Unknown, Subject: g.Name,
+					Reason: fmt.Sprintf("runner unit %s is inactive, but another runner for the same repo scope is active — this is a stale registration, not an outage", r.Unit),
+					Supporting: []string{
+						fmt.Sprintf("repo scope %q still has at least one active runner unit on this fleet", scope),
+						"restarting this unit would re-register a duplicate runner rather than fix anything",
+					},
+					NextAction: fmt.Sprintf("delete the stale unit once you have confirmed it is unused: umbra exec %s sudo systemctl disable --now %s", g.Name, r.Unit),
+				})
+				continue
+			}
+			out = append(out, Verdict{
+				Rung: RungRunnerServiceDown, Health: Fail, Subject: g.Name,
+				Reason: fmt.Sprintf("runner unit %s is not active and no other runner for its repo scope is active on this fleet", r.Unit),
+				Supporting: []string{
+					"no active runner means this repo's jobs queue with nothing to pick them up",
+				},
+				NextAction: fmt.Sprintf("umbra exec %s sudo systemctl restart %s", g.Name, r.Unit),
+			})
 		}
 	}
 
 	return append(out, classifyRepos(e)...)
+}
+
+// reposWithAnActiveRunner maps a repo scope to whether ANY guest on the fleet
+// is running an active runner unit for it. See the stale-registration note in
+// classifyGuests for why this is fleet-wide rather than per-guest.
+func reposWithAnActiveRunner(e Evidence) map[string]bool {
+	served := map[string]bool{}
+	for _, g := range e.Guests {
+		for _, r := range g.Runners {
+			if !r.Active {
+				continue
+			}
+			if scope := RunnerUnitScope(r.Unit); scope != "" {
+				served[scope] = true
+			}
+		}
+	}
+	return served
+}
+
+// RunnerUnitScope extracts the scope from a systemd unit named
+// actions.runner.<scope>.<instance>.service, where <scope> is the escaped
+// "<owner>-<repo>" (or a bare org for an org-level runner). It returns "" for
+// anything that is not a runner unit.
+//
+// It lives HERE, in the pure package, because both the classifier (to group
+// units by repo) and the collector (to derive which repos to probe on GitHub)
+// need it, and two copies of this parse would drift the moment either changed.
+// It is pure string handling — no I/O — so it does not compromise Classify.
+func RunnerUnitScope(unit string) string {
+	s := strings.TrimSuffix(unit, ".service")
+	s = strings.TrimPrefix(s, "actions.runner.")
+	if s == unit || s == "" {
+		return ""
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0]
 }
 
 // classifyRepos covers the GitHub-side rungs. These matter because a perfectly
