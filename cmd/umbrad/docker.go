@@ -77,7 +77,17 @@ func dockerHostBuild() string {
 
 func (d *dockerController) view(m *registry.Machine) api.MachineView {
 	info := d.mgr.Info(m.Name)
-	return api.MachineView{Machine: *m, State: info.State, IP: info.IP, SSHPort: info.SSHPort, Zombie: info.Zombie}
+	// ConfiguredIP is lifted out of the embedded Machine here for the same
+	// reason as in api.(*Server).view: the embedded registry.Machine.IP shares
+	// the `ip` json tag with MachineView's own field and is dropped on the
+	// wire, so a view that does not set it explicitly reports no configured
+	// address at all. This is the second construction site of the same type —
+	// any third one has the same obligation.
+	return api.MachineView{
+		Machine: *m, State: info.State,
+		IP: info.IP, ConfiguredIP: m.IP,
+		SSHPort: info.SSHPort, Zombie: info.Zombie,
+	}
 }
 
 func (d *dockerController) sockPath() string { return filepath.Join(paths.Run(), "docker.sock") }

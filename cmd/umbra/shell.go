@@ -41,6 +41,40 @@ func sshArgs(mv *client.MachineView, remoteCmd []string) []string {
 	return args
 }
 
+// sshProbeArgs is sshArgs hardened for NON-INTERACTIVE probes (umbra doctor).
+//
+// Two options are added here and deliberately NOT in sshArgs itself:
+//
+//   - BatchMode=yes — never prompt. sshArgs is shared with the interactive
+//     shell/exec commands, where a passphrase or host-key prompt is a feature;
+//     setting BatchMode there would break `umbra shell` for anyone whose key
+//     is not already in the agent. A prompt inside doctor, by contrast, blocks
+//     forever with nothing on the other end to answer it.
+//   - ConnectTimeout + ServerAlive* — bound the wait. doctor's whole purpose
+//     is diagnosing a guest that is up with a live forwarded port but a dead
+//     netstack, which is exactly the case where a TCP connect hangs rather
+//     than refusing. A diagnostic that hangs on the fault it diagnoses is
+//     worse than one that honestly reports Unknown.
+//
+// runner/stats keep the plain sshArgs: they act on a machine the user has
+// already asserted is healthy, and a longer wait there is not a misdiagnosis.
+func sshProbeArgs(mv *client.MachineView, remoteCmd []string) []string {
+	base := sshArgs(mv, nil)
+	out := []string{base[0],
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=" + strconv.Itoa(sshProbeConnectSeconds),
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=2",
+	}
+	out = append(out, base[1:]...)
+	return append(out, remoteCmd...)
+}
+
+// sshProbeConnectSeconds bounds the TCP connect for doctor's probes. Short
+// enough that a wedged guest is reported rather than waited on; long enough
+// that a merely busy guest is not misreported as unreachable.
+const sshProbeConnectSeconds = 5
+
 func runShell(cmd *cobra.Command, args []string) error {
 	mv, err := apiClient.GetMachine(cmd.Context(), args[0])
 	if err != nil {

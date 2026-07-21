@@ -121,6 +121,51 @@ umbra prune dev                  # reclaim guest disk: apt cache, docker prune, 
 umbra stats                      # live cpu/mem/swap/disk table across all machines
 ```
 
+## Diagnosing a fault
+
+```sh
+umbra doctor                     # classify the fault and print the next action (read-only)
+umbra doctor --json              # same, machine-readable (watchdog probe)
+umbra doctor --deep              # also run a bounded load canary (~60s per RUNNING guest)
+```
+
+`doctor` walks a triage ladder — daemon down, crashed machine, host netstack death, guest
+with no IP, guest whose ssh stalls, inactive runner unit, stale runner registration,
+GitHub billing lockout, and finally host hardware — and reports the rung it matched plus
+the exact command to run next. It exits 1 when it finds a fault, 0 when it does not.
+
+A probe that cannot be **run** — no `gh`, no `ssh`, an unreadable `umbrad.err.log`, a
+guest with no forwarded ssh port, a load canary that never completed — is reported as
+`unknown`, never as healthy. `unknown` does not set the exit code: it means nothing was
+diagnosed, which is not the same as finding nothing wrong. `--json` adds `healthy` and
+`unknown_only` so a watchdog does not have to reimplement that rule.
+
+Every machine state is accounted for. A `crashed` machine is a fault (rung
+`machine-crashed`); the zombie sub-case — crashed with an unconfirmed stop, so the VM may
+**still be alive** and holding host resources, shown as `crashed*` by `umbra list` — gets
+a different remedy (repeat `umbra stop`, do not `umbra rm`). A machine caught mid-
+transition (`starting` / `stopping`) is reported as `unknown` rather than a fault: doctor
+races an ordinary restart routinely, but it will not render that silence as health. Only
+`stopped` is deliberately silent, because that is where the standby spare lives.
+
+It is **diagnose-only**: the default run never mutates host or guest state. `--deep` opts
+into a bounded load canary, which is the only way to detect a host-hardware fault (stock
+arm64 binaries crashing with SIGILL/SIGSEGV means the guest is miscomputing, and no amount
+of RAM or CPU tuning will fix that).
+
+Two rungs are worth knowing about because they look alike but need opposite fixes: a
+GitHub **billing lockout** makes jobs die in ~3s with no runner assigned, while an
+**offline runner** makes jobs queue forever. A third, **netstack death**, makes jobs queue
+*and* every guest unreachable. Never diagnose one as another.
+
+The netstack rung has one **known residual false positive**, disclosed in the verdict's
+own evidence rather than hidden: it correlates guests against netstack log lines with no
+time dimension, and `guest link <MAC> closed` is also emitted by the shutdown half of an
+ordinary `umbra stop && umbra start`. Two guests restarted within one daemon lifetime and
+still booting can therefore produce the same signature. Confirm neither guest was
+restarted recently before acting on it. Eliminating it needs a per-machine boot timestamp,
+which umbrad does not currently record.
+
 ## Rosetta / amd64 (M6)
 
 `docker run --platform linux/amd64 ...` works unchanged on the docker VM (and

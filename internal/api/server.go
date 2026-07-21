@@ -91,10 +91,30 @@ func NewServer(reg *registry.Registry, lc Lifecycle, prov Provisioner, ready fun
 
 type MachineView struct {
 	registry.Machine
-	State   vm.State `json:"state"`
-	IP      string   `json:"ip,omitempty"`
-	SSHPort int      `json:"ssh_port,omitempty"`
-	Zombie  bool     `json:"zombie,omitempty"`
+	State vm.State `json:"state"`
+	// IP is the READINESS-CONFIRMED runtime address from vm.Info: published
+	// only after umbrad's readiness probe succeeds (up to 90s after the state
+	// flips to running) and cleared again on stop.
+	IP string `json:"ip,omitempty"`
+	// ConfiguredIP is the STATIC address recorded in the machine registry at
+	// create time (registry.Machine.IP).
+	//
+	// IT MUST BE ITS OWN FIELD WITH ITS OWN JSON KEY, and this is not
+	// stylistic. registry.Machine.IP is tagged `json:"ip,omitempty"` and is
+	// promoted through the embedding above, where it COLLIDES with the
+	// shallower IP field on this struct. encoding/json resolves a collision at
+	// unequal depth in favour of the shallower field and drops the deeper one
+	// entirely, so the embedded Machine.IP was neither marshalled nor
+	// unmarshalled — it read as "" on every real run. Reading the configured
+	// address off the embedded struct on the CLI side therefore convicted
+	// every guest in its boot window as `guest-no-ip` and told the operator to
+	// destroy and recreate a healthy machine.
+	//
+	// Purely additive to the payload: `ip` keeps its runtime meaning, so the
+	// --json watchdog contract is unchanged.
+	ConfiguredIP string `json:"configured_ip,omitempty"`
+	SSHPort      int    `json:"ssh_port,omitempty"`
+	Zombie       bool   `json:"zombie,omitempty"`
 }
 
 type CreateRequest struct {
@@ -164,7 +184,13 @@ func (s *Server) snapDir(name string) string {
 
 func (s *Server) view(m *registry.Machine) MachineView {
 	info := s.lc.Info(m.Name)
-	return MachineView{Machine: *m, State: info.State, IP: info.IP, SSHPort: info.SSHPort, Zombie: info.Zombie}
+	// ConfiguredIP is lifted OUT of the embedded Machine on purpose — see the
+	// field's doc for why the embedded copy cannot survive the wire.
+	return MachineView{
+		Machine: *m, State: info.State,
+		IP: info.IP, ConfiguredIP: m.IP,
+		SSHPort: info.SSHPort, Zombie: info.Zombie,
+	}
 }
 
 func (s *Server) Handler() http.Handler {
