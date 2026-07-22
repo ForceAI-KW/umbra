@@ -112,6 +112,11 @@ lint:
 	gofmt -l . && test -z "$$(gofmt -l .)"
 	go vet ./...
 
+# Enable the tracked git hooks (.githooks/pre-push runs lint + test before every push).
+hooks:
+	git config core.hooksPath .githooks
+	@echo "git hooks enabled (core.hooksPath=.githooks)"
+
 run-daemon: build
 	$(BIN)/umbrad
 
