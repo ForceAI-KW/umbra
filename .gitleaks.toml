@@ -1,0 +1,17 @@
+# umbra — gitleaks config (fleet standard: force-ai-foundation/template/.gitleaks.toml).
+# Value-based allowlisting (not commit-fingerprint pinning) so entries survive squash-merges.
+title = "umbra"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented local-only throwaways + example files"
+regexes = [
+  # Add ONLY proven-safe dev/local throwaway values here, one per line.
+]
+paths = [
+  '''.*\.example$''',
+  '''^\.gitleaks\.toml$''',
+  '''^\.gitleaksignore$''',
+]
