@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+# umbra local pre-push gate — mirrors the fast CI checks (ci.yml) before a push,
+# so gofmt/vet/test failures surface locally instead of after burning CI.
+# Enable once with: make hooks   (sets core.hooksPath to .githooks)
+# Skips the slow test-integration (build + codesign + VM) — that stays CI-only.
+set -e
+echo "[pre-push] gofmt + go vet…"
+make lint
+echo "[pre-push] go test…"
+make test
+echo "[pre-push] OK"
