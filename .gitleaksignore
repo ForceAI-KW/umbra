@@ -1,0 +1,2 @@
+# Documented false-positive fingerprints ONLY (<commit-sha>:<file>:<rule>:<line>), each with a reason.
+# Real leaks are rotated + history-scrubbed, never listed here. (none currently — full scan is clean.)
